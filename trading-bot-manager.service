@@ -1,0 +1,31 @@
+[Unit]
+Description=Trading Bot Manager (Market Hours Only)
+Documentation=file:///home/i030983/tradingbots/services/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/i030983/tradingbots
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONUSERBASE=/home/i030983/.local"
+EnvironmentFile=/home/i030983/.trading_profile
+
+# Start bot manager
+ExecStart=/usr/bin/python3 /home/i030983/tradingbots/services/bot_manager.py
+
+# Graceful shutdown (wait 30s for bots to close positions)
+ExecStop=/bin/bash /home/i030983/tradingbots/services/stop_bots.sh
+TimeoutStopSec=30
+
+# Do NOT auto-restart - systemd timer controls start/stop times
+Restart=no
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-bot-manager
+
+[Install]
+# Do not enable directly - managed by systemd timer
+# WantedBy=multi-user.target

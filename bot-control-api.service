@@ -1,0 +1,17 @@
+[Unit]
+Description=Bot Control API Server
+After=network.target
+
+[Service]
+Type=simple
+User=i030983
+WorkingDirectory=/home/i030983/tradingbots/trading
+ExecStart=/usr/bin/python3 /home/i030983/tradingbots/trading/bot_control_api.py
+Restart=always
+RestartSec=10
+
+# Allow systemctl commands without password
+Environment="SUDO_ASKPASS=/bin/false"
+
+[Install]
+WantedBy=multi-user.target

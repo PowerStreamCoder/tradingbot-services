@@ -1,0 +1,20 @@
+# Service files should be committed
+# Only gitignore temporary files
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs (should not be in repo)
+*.log
+*.out
+
+# Backup files
+*.bak
+*.backup

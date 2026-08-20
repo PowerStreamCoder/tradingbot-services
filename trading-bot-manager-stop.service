@@ -1,0 +1,10 @@
+[Unit]
+Description=Stop Trading Bot Manager at Market Close
+Documentation=file:///home/i030983/tradingbots/services/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl stop trading-bot-manager.service
+
+[Install]
+WantedBy=multi-user.target

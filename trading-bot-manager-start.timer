@@ -1,0 +1,19 @@
+[Unit]
+Description=Start Trading Bots at Market Open (with 20% buffer)
+Documentation=file:///home/i030983/tradingbots/services/README.md
+
+[Timer]
+# Start at 8:51 AM ET Monday-Friday (9:30 AM - 39 min buffer)
+OnCalendar=Mon-Fri 08:51:00 America/New_York
+
+# If system was off at scheduled time, start immediately on boot (if trading hours)
+Persistent=true
+
+# Run check immediately on boot if within trading hours
+OnBootSec=30s
+
+# Specify which service to trigger
+Unit=trading-bot-manager.service
+
+[Install]
+WantedBy=timers.target

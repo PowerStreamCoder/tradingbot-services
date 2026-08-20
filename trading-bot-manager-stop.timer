@@ -1,0 +1,16 @@
+[Unit]
+Description=Stop Trading Bots at Market Close (with 20% buffer)
+Documentation=file:///home/i030983/tradingbots/services/README.md
+
+[Timer]
+# Stop at 4:39 PM ET Monday-Friday (4:00 PM + 39 min buffer)
+OnCalendar=Mon-Fri 16:39:00 America/New_York
+
+# Don't persist - if system was off, no need to stop (already stopped)
+Persistent=false
+
+# Specify which service to trigger (stop service, not main service)
+Unit=trading-bot-manager-stop.service
+
+[Install]
+WantedBy=timers.target
