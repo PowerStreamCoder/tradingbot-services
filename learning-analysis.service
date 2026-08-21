@@ -1,0 +1,32 @@
+[Unit]
+Description=Nightly Learning Analysis
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+After=network-online.target
+Wants=network-online.target
+Requires=network-online.target
+
+[Service]
+Type=oneshot
+User=i030983
+Group=i030983
+WorkingDirectory=/home/i030983/tradingbots
+
+# Execute analysis script
+ExecStart=/usr/bin/python3 /home/i030983/tradingbots/scripts/run_learning_analysis.py
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=learning-analysis
+
+# Resource limits (analysis typically uses ~200MB, <10% CPU)
+# These limits prevent runaway bugs from impacting bots
+TimeoutStartSec=300s
+MemoryMax=1G
+CPUQuota=50%
+
+# Restart policy (don't restart - it's a one-shot)
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

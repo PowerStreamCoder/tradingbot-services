@@ -1,0 +1,21 @@
+[Unit]
+Description=Schedule Nightly Learning Analysis (11 PM ET, Weekdays)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+Requires=learning-analysis.service
+Conflicts=learning-analysis.service
+
+[Timer]
+# Run at 11:00 PM Eastern Time, Monday through Friday
+OnCalendar=Mon..Fri 23:00:00 America/New_York
+
+# Don't run missed executions (if VM was down)
+Persistent=false
+
+# Randomize start time by up to 5 minutes to avoid exact midnight spikes
+RandomizedDelaySec=300
+
+# Linked service
+Unit=learning-analysis.service
+
+[Install]
+WantedBy=timers.target
