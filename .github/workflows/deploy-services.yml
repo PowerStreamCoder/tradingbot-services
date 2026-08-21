@@ -1,0 +1,199 @@
+name: Deploy Services to VM (Manual Only)
+
+# Only manual trigger - services change very rarely and require sudo
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "deploy" to confirm systemd service deployment'
+        required: true
+        default: ''
+
+env:
+  VM_USER: i030983
+  VM_HOST: ${{ secrets.VM_HOST }}
+  SERVICES_PATH: /home/i030983/tradingbots/services
+
+jobs:
+  validate:
+    name: Validate Confirmation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+            echo "❌ Deployment cancelled - confirmation not provided"
+            echo "Please type 'deploy' in the confirmation field"
+            exit 1
+          fi
+          echo "✅ Confirmation received"
+
+  deploy:
+    name: Deploy Services
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Validate service files exist
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Service Files to Deploy:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          SERVICE_COUNT=$(ls -1 *.service 2>/dev/null | wc -l)
+          TIMER_COUNT=$(ls -1 *.timer 2>/dev/null | wc -l)
+
+          if [ "$SERVICE_COUNT" -eq 0 ] && [ "$TIMER_COUNT" -eq 0 ]; then
+            echo "❌ No service or timer files found in repository root"
+            exit 1
+          fi
+
+          echo ""
+          echo "Services (*.service):"
+          ls -lh *.service 2>/dev/null || echo "  None"
+
+          echo ""
+          echo "Timers (*.timer):"
+          ls -lh *.timer 2>/dev/null || echo "  None"
+
+          echo ""
+          echo "Total: $SERVICE_COUNT service(s), $TIMER_COUNT timer(s)"
+          echo "Destination: /etc/systemd/system/"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Backup current service files on VM
+        run: |
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            BACKUP_DIR="$HOME/systemd-backups/backup-$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$BACKUP_DIR"
+
+            # Backup existing service files
+            sudo cp /etc/systemd/system/trading-bot-*.service "$BACKUP_DIR/" 2>/dev/null || true
+            sudo cp /etc/systemd/system/trading-bot-*.timer "$BACKUP_DIR/" 2>/dev/null || true
+            sudo cp /etc/systemd/system/bot-control-api.service "$BACKUP_DIR/" 2>/dev/null || true
+
+            echo "✅ Backup created: $BACKUP_DIR"
+
+            # Keep only last 5 backups
+            ls -dt $HOME/systemd-backups/backup-* | tail -n +6 | xargs rm -rf
+          EOF
+
+      - name: Upload service files to VM (systemd files only)
+        run: |
+          # Only upload .service and .timer files (exclude everything else)
+          SERVICE_FILES=$(ls *.service 2>/dev/null || echo "")
+          TIMER_FILES=$(ls *.timer 2>/dev/null || echo "")
+
+          if [ -n "$SERVICE_FILES" ]; then
+            scp $SERVICE_FILES ${{ env.VM_USER }}@${{ env.VM_HOST }}:/tmp/
+            echo "✅ Uploaded service files: $SERVICE_FILES"
+          fi
+
+          if [ -n "$TIMER_FILES" ]; then
+            scp $TIMER_FILES ${{ env.VM_USER }}@${{ env.VM_HOST }}:/tmp/
+            echo "✅ Uploaded timer files: $TIMER_FILES"
+          fi
+
+          echo ""
+          echo "📋 Files NOT uploaded (excluded):"
+          echo "  ❌ Tests, docs, README.md, scripts, etc."
+          echo "  ✅ Only systemd unit files deployed"
+
+      - name: Install service files (requires sudo)
+        run: |
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            echo "Installing systemd service files..."
+
+            # Copy service files to systemd directory
+            sudo cp /tmp/*.service /etc/systemd/system/ 2>/dev/null || true
+            sudo cp /tmp/*.timer /etc/systemd/system/ 2>/dev/null || true
+
+            # Set proper ownership and permissions
+            sudo chown root:root /etc/systemd/system/trading-bot-*.service 2>/dev/null || true
+            sudo chown root:root /etc/systemd/system/trading-bot-*.timer 2>/dev/null || true
+            sudo chown root:root /etc/systemd/system/bot-control-api.service 2>/dev/null || true
+            sudo chmod 644 /etc/systemd/system/trading-bot-*.service 2>/dev/null || true
+            sudo chmod 644 /etc/systemd/system/trading-bot-*.timer 2>/dev/null || true
+            sudo chmod 644 /etc/systemd/system/bot-control-api.service 2>/dev/null || true
+
+            # Clean up temp files
+            rm /tmp/*.service /tmp/*.timer 2>/dev/null || true
+
+            echo "✅ Service files installed"
+          EOF
+
+      - name: Reload systemd daemon
+        run: |
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            echo "Reloading systemd daemon..."
+            sudo systemctl daemon-reload
+            echo "✅ Systemd daemon reloaded"
+          EOF
+
+      - name: Show service status
+        run: |
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📊 Service Status"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            echo ""
+            echo "🤖 Trading Bot Manager:"
+            sudo systemctl status trading-bot-manager.service --no-pager -l || true
+
+            echo ""
+            echo "⏰ Start Timer:"
+            sudo systemctl status trading-bot-manager-start.timer --no-pager -l || true
+
+            echo ""
+            echo "⏰ Stop Timer:"
+            sudo systemctl status trading-bot-manager-stop.timer --no-pager -l || true
+
+            echo ""
+            echo "🌐 Bot Control API:"
+            sudo systemctl status bot-control-api.service --no-pager -l || true
+
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          EOF
+
+      - name: Deployment summary
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ SERVICE DEPLOYMENT COMPLETE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📝 Next Steps:"
+          echo ""
+          echo "1. Review service status above"
+          echo "2. If services need restart:"
+          echo "   sudo systemctl restart trading-bot-manager"
+          echo ""
+          echo "3. Enable timers if not already enabled:"
+          echo "   sudo systemctl enable --now trading-bot-manager-start.timer"
+          echo "   sudo systemctl enable --now trading-bot-manager-stop.timer"
+          echo ""
+          echo "4. View logs:"
+          echo "   sudo journalctl -u trading-bot-manager -f"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Create deployment record
+        run: |
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+            RECORD_FILE="$HOME/systemd-deployments.log"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Services deployed via GitHub Actions" >> "$RECORD_FILE"
+            echo "✅ Deployment recorded"
+          EOF
