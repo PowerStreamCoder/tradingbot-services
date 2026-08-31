@@ -81,6 +81,110 @@ sudo systemctl stop trading-bot-manager
 sudo systemctl list-timers trading-bot-manager*
 ```
 
+## Runtime Overrides in Production
+
+Any bot parameter can be changed in production **without redeploying code** using environment variables. This is the recommended approach for emergency hotfixes or quick experiments.
+
+### How It Works
+
+Environment variables with the `TRADING_` prefix override any configuration tier at startup:
+
+```
+TRADING_<PARAM_NAME_UPPERCASE>=<value>
+```
+
+Type conversion is automatic:
+- `TRADING_USE_COVERED_CALLS=false` → bool `False`
+- `TRADING_ATR_PERIOD=20` → int `20`
+- `TRADING_STOP_LOSS_THRESHOLD=0.97` → float `0.97`
+- `TRADING_SYMBOL=IWM` → str `"IWM"`
+
+### Persistent Overrides via `.trading_profile`
+
+For overrides that should survive service restarts, add them to `/home/i030983/.trading_profile` on the VM. The service sources this file on startup.
+
+```bash
+ssh trading-bot-vm
+
+# Add override (appends — does not replace existing entries)
+echo "TRADING_STOP_LOSS_THRESHOLD=0.97" >> /home/i030983/.trading_profile
+
+# Or edit directly for multiple changes
+nano /home/i030983/.trading_profile
+```
+
+Restart the service to apply:
+
+```bash
+sudo systemctl restart trading-bot-manager
+
+# Confirm override was applied — look for [CONFIG] lines
+sudo journalctl -u trading-bot-manager -n 50 | grep "\[CONFIG\]"
+```
+
+### Common Production Hotfixes
+
+**Tighten stop loss temporarily (e.g. volatile market):**
+```bash
+echo "TRADING_STOP_LOSS_THRESHOLD=0.97" >> /home/i030983/.trading_profile
+sudo systemctl restart trading-bot-manager
+```
+
+**Disable covered calls for a specific session:**
+```bash
+echo "TRADING_USE_COVERED_CALLS=false" >> /home/i030983/.trading_profile
+sudo systemctl restart trading-bot-manager
+```
+
+**Reduce capital allocation while testing:**
+```bash
+echo "TRADING_CAPITAL_PER_BUCKET_LONG=10000" >> /home/i030983/.trading_profile
+sudo systemctl restart trading-bot-manager
+```
+
+**Verify overrides are active:**
+```bash
+sudo journalctl -u trading-bot-manager | grep "Environment overrides applied"
+# Expected: [CONFIG] Environment overrides applied: stop_loss_threshold=0.97
+```
+
+**Remove an override:**
+```bash
+# Edit the file and delete the relevant line
+nano /home/i030983/.trading_profile
+sudo systemctl restart trading-bot-manager
+```
+
+### One-Time Override (Testing Only)
+
+For a single run without persisting to `.trading_profile`:
+
+```bash
+sudo systemctl stop trading-bot-manager
+
+# Run manually with override
+TRADING_CAPITAL_PER_BUCKET_LONG=5000 \
+TRADING_PROFILE=paper \
+python /home/i030983/tradingbots/bots/UniversalSMABot.py
+
+# When satisfied, restart the service normally
+sudo systemctl start trading-bot-manager
+```
+
+### Override Priority Reference
+
+```
+TRADING_* env vars           (highest — always wins)
+    ↓ overrides
+bots/<symbol>.json           (per-symbol tuning)
+    ↓ overrides
+UniversalSMABot strategy_overrides  (strategy logic defaults)
+    ↓ overrides
+profiles/paper.json or live.json    (environment settings)
+```
+
+See [tradingbot-config/bots/README.md](https://github.com/PowerStreamCoder/tradingbot-config/blob/main/bots/README.md) for the full list of configurable parameters.
+
 ## Related Repositories
 
 - [tradingbot-bots](https://github.com/PowerStreamCoder/tradingbot-bots) - Bot runtime code
