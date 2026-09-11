@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=i030983
 WorkingDirectory=/home/i030983/tradingbots/trading
-ExecStart=/usr/bin/python3 /home/i030983/tradingbots/trading/bot_control_api.py
+ExecStart=/home/i030983/venv311/bin/python3 /home/i030983/tradingbots/trading/bot_control_api.py
 Restart=always
 RestartSec=10
 

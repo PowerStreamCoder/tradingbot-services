@@ -12,7 +12,7 @@ Environment="PYTHONUSERBASE=/home/i030983/.local"
 EnvironmentFile=/home/i030983/.trading_profile
 
 # Start bot manager
-ExecStart=/usr/bin/python3 /home/i030983/tradingbots/services/bot_manager.py
+ExecStart=/home/i030983/venv311/bin/python3 /home/i030983/tradingbots/services/bot_manager.py
 
 # Graceful shutdown (wait 30s for bots to close positions)
 ExecStop=/bin/bash /home/i030983/tradingbots/services/stop_bots.sh
