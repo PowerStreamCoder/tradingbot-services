@@ -1,0 +1,56 @@
+[Unit]
+Description=Trade Log Auditor (offline post-close audit)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+After=network-online.target
+Wants=network-online.target
+Requires=network-online.target
+
+# The auditor reads the previous session's trade log, so it must not race the bots
+# writing today's records. Starting after the stop timer guarantees the day's
+# records are final.
+After=trading-bot-manager-stop.timer
+Wants=trading-bot-manager-stop.timer
+
+[Service]
+Type=oneshot
+User=i030983
+Group=i030983
+
+# The auditor code lives in the tradingbot-tools repository and is deployed to this
+# path by that repo's own deploy-tools.yml (23:45 ET nightly, plus manual dispatch).
+# The tradingbot-services workflow ships only .service/.timer files, so it does not
+# deliver the code itself -- but the nightly tools deploy does, hours before this
+# unit runs. Check prerequisites in ExecStartPre; the run aborts with an actionable
+# message rather than a bare "No module named auditor".
+ExecStartPre=/usr/bin/test -d /home/i030983/tradingbot-tools/auditor
+ExecStartPre=/usr/bin/test -d /home/i030983/tradingbots/trading
+
+WorkingDirectory=/home/i030983/tradingbot-tools
+
+Environment=BOTS_DIR=/home/i030983/tradingbots
+Environment=PYTHONPATH=/home/i030983/tradingbot-tools
+
+# Audit the previous session, publish proposals to learning_candidates for human
+# review, and page the operator for new critical/high findings. The auditor is
+# read-only against live trading state; its only writes are the audit_* collections,
+# its own memory/report files, pending_review learning candidates, and notifications.
+#
+# flock: a manual re-run and the timer must never reconcile memory concurrently.
+# -n fails fast instead of queueing behind a long audit.
+ExecStart=/usr/bin/flock -n /tmp/trade_log_auditor.lock /usr/bin/python3 -m auditor --date yesterday --publish-proposals --send-alerts
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trade-log-auditor
+
+# Resource limits: the audit is a batch job over one session's records.
+TimeoutStartSec=600s
+MemoryMax=1G
+CPUQuota=50%
+
+# One-shot: a failed audit is a real signal, not something to retry blindly.
+# The timer runs again the next trading day.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **Market Schedule Timers**: Systemd timers automatically start bot processes prior to market open (8:51 AM ET) and execute graceful shutdown procedures after market close (4:39 PM ET).
 - **Graceful Shutdown (`stop_bots.sh`)**: Sends orderly SIGTERM signals, providing bots a 30-second window to persist open bucket states and flush logs before hard termination.
 - **Bot Control API Unit (`bot-control-api.service`)**: Runs the standalone REST command server enabling remote actions from the Cloud Run Dashboard.
+- **Trade Log Auditor Unit (`trade-log-auditor.service` / `.timer`)**: Runs the offline post-close trade-log auditor at 4:45 PM ET Mon-Fri, after the stop timer and before the 11:00 PM learning analysis, so an audit failure is visible the same evening.
 
 ---
 
@@ -24,6 +25,8 @@ tradingbot-services/
 ├── trading-bot-manager-stop.timer         # Systemd timer auto-stopping bots at market close
 ├── trading-bot-manager-stop.service       # Service unit executing stop_bots.sh
 ├── bot-control-api.service                # Systemd service for dashboard remote command API
+├── trade-log-auditor.service              # Post-close trade-log audit (oneshot, read-only)
+├── trade-log-auditor.timer                # Schedules the audit at 4:45 PM ET Mon-Fri
 ├── stop_bots.sh                           # Orderly shutdown and state preservation script
 └── .github/workflows/
     ├── deploy-services.yml                # Protected manual deployment workflow
@@ -52,6 +55,38 @@ sudo systemctl stop trading-bot-manager
 # List all active market open / close timers and next scheduled trigger
 sudo systemctl list-timers trading-bot-manager*
 ```
+
+### Trade Log Auditor
+```bash
+# When the audit last ran, whether it succeeded, and what it found
+sudo systemctl status trade-log-auditor
+sudo journalctl -u trade-log-auditor -n 200 --no-pager
+
+# Next scheduled run
+systemctl list-timers trade-log-auditor*
+
+# Re-run a session by hand (does not disturb the timer schedule)
+cd /home/i030983/tradingbot-tools
+python3 -m auditor --date yesterday --no-firestore        # offline, writes nothing
+python3 -m auditor --date yesterday --dry-run             # preview only
+```
+
+> **Where the auditor code comes from:** the auditor lives in the `tradingbot-tools`
+> repository and reaches the VM through that repo's own `deploy-tools.yml`
+> (23:45 ET nightly, plus `workflow_dispatch` and a `tools-interface-changed` dispatch
+> from `tradingbot-bots`). This repo's deploy workflow copies only units, so it does
+> not deliver the code — but the nightly tools deploy does, well before the 16:45 ET
+> audit.
+>
+> The deploy job enables `trade-log-auditor.timer` only when
+> `/home/i030983/tradingbot-tools/auditor` exists, and the unit's `ExecStartPre`
+> guards fail with a clear message instead of an import error. **First-deploy
+> caveat:** this workflow runs at 23:30 ET, 15 minutes *before* the tools deploy, so
+> on the very first run the package is not there yet and the timer self-enables on
+> the next nightly services run. If the auditor is not auditing after two nights,
+> confirm the code landed (`ls /home/i030983/tradingbot-tools/auditor`) before
+> investigating the unit. See
+> [TRADE_LOG_AUDITOR_DESIGN.md](../tradingbot-documentation/designDocs/TRADE_LOG_AUDITOR_DESIGN.md).
 
 ### Direct CLI Bot Inspection
 ```bash
