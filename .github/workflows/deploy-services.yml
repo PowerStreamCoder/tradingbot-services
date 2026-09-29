@@ -1,48 +1,162 @@
-name: Deploy Services to VM (Manual Only)
+name: Deploy Services to VM (Daily Sync & Manual)
 
-# Only manual trigger - services change very rarely and require sudo
+# Aligned with tradingbot-bots daily deploy at 03:00 UTC — runs 30 min later
+# to ensure bots code is already on the VM before validating service paths.
 on:
+  schedule:
+    # Mon-Fri at 03:30 UTC (30 min after bots daily deploy)
+    - cron: '30 3 * * 2-6'
+  repository_dispatch:
+    types: [services-paths-changed]  # triggered by bots deploy when ExecStart paths change
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "deploy" to confirm systemd service deployment'
-        required: true
+        description: 'Type "deploy" to confirm (required for manual, auto-filled for scheduled)'
+        required: false
         default: ''
 
 env:
   VM_USER: i030983
-  VM_HOST: ${{ secrets.VM_HOST }}
   SERVICES_PATH: /home/i030983/tradingbots/services
 
 jobs:
-  validate:
-    name: Validate Confirmation
+  check-and-validate:
+    name: Validate & Check Changes
     runs-on: ubuntu-latest
+    env:
+      VM_HOST: ${{ secrets.VM_HOST }}
+    outputs:
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
     steps:
-      - name: Check confirmation
+      - name: Validate trigger
         run: |
-          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
-            echo "❌ Deployment cancelled - confirmation not provided"
-            echo "Please type 'deploy' in the confirmation field"
-            exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+              echo "❌ Manual deployment cancelled - type 'deploy' to confirm"
+              exit 1
+            fi
+            echo "✅ Manual deployment confirmed"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "✅ Scheduled daily sync — auto-approved"
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "✅ Cross-repo dispatch (services-paths-changed) — auto-approved"
           fi
-          echo "✅ Confirmation received"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure SSH
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$VM_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Check for changes since last deploy
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "🔔 Cross-repo dispatch — always deploy to re-validate paths"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "🔧 Manual trigger — always deploy"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Scheduled run: check if service files changed since last deploy
+          DEPLOYED_COMMIT=$(ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ env.VM_HOST }} "cat \$HOME/systemd-backups/latest_deployed_services_commit.txt 2>/dev/null || echo 'none'")
+          DEPLOYED_COMMIT=$(echo "$DEPLOYED_COMMIT" | tr -d '[:space:]')
+          CURRENT_COMMIT="${{ github.sha }}"
+
+          echo "Last deployed services commit: $DEPLOYED_COMMIT"
+          echo "Current main branch commit:    $CURRENT_COMMIT"
+
+          if [ "$DEPLOYED_COMMIT" = "$CURRENT_COMMIT" ]; then
+            echo "✅ Services on VM are up-to-date. No changes to deploy."
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check if only non-service files changed (README, scripts, etc.)
+          if [ "$DEPLOYED_COMMIT" != "none" ] && git rev-parse "$DEPLOYED_COMMIT" >/dev/null 2>&1; then
+            CHANGED_SERVICES=$(git diff --name-only "$DEPLOYED_COMMIT" "$CURRENT_COMMIT" -- '*.service' '*.timer' | wc -l)
+            if [ "$CHANGED_SERVICES" -eq 0 ]; then
+              echo "✅ No .service/.timer file changes since last deploy. Skipping."
+              echo "should_deploy=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "🔍 Service/timer file changes detected. Proceeding to deploy."
+          echo "should_deploy=true" >> $GITHUB_OUTPUT
+
+      - name: Cross-repo path validation (ExecStart targets)
+        if: steps.check.outputs.should_deploy == 'true'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔗 Cross-Repo Path Validation"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          ERRORS=0
+          for svc in *.service; do
+            [ -f "$svc" ] || continue
+            # Extract ExecStart and ExecStop paths (skip /usr/bin system binaries)
+            for directive in ExecStart ExecStop ExecStartPre; do
+              while IFS= read -r line; do
+                EXEC_PATH=$(echo "$line" | sed 's/^[^=]*=//' | awk '{print $1}')
+                # Skip system binaries and flock
+                case "$EXEC_PATH" in
+                  /usr/bin/*|/bin/*) continue ;;
+                esac
+                echo "  Checking $svc → $directive → $EXEC_PATH"
+                if ! ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ env.VM_HOST }} "test -f '$EXEC_PATH' || test -d '$EXEC_PATH'" 2>/dev/null; then
+                  echo "  ❌ MISSING on VM: $EXEC_PATH (referenced by $svc)"
+                  ERRORS=$((ERRORS + 1))
+                else
+                  echo "  ✅ exists"
+                fi
+              done < <(grep "^${directive}=" "$svc" 2>/dev/null || true)
+            done
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "⚠️  $ERRORS ExecStart/ExecStop path(s) missing on VM."
+            echo "    The bots repo may not have deployed yet, or a script was renamed."
+            echo "    Proceeding with deploy — but the affected services may fail to start."
+          else
+            echo ""
+            echo "✅ All ExecStart/ExecStop paths verified on VM"
+          fi
 
   deploy:
     name: Deploy Services
-    needs: validate
+    needs: check-and-validate
+    if: needs.check-and-validate.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    env:
+      VM_HOST: ${{ secrets.VM_HOST }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Configure SSH
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          echo "$VM_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
 
       - name: Validate service files exist
         run: |
@@ -157,12 +271,28 @@ jobs:
             echo "Enabling and restarting timers..."
             sudo systemctl enable --now trading-bot-manager-start.timer
             sudo systemctl enable --now trading-bot-manager-stop.timer
+            # Only enable the auditor timer once its code is actually on the VM.
+            # This workflow ships only units; the auditor code arrives via
+            # tradingbot-tools' own deploy-tools.yml (23:45 ET nightly). Enabling
+            # unconditionally would queue a unit whose ExecStartPre fails every
+            # afternoon. Note this workflow runs at 23:30 ET, i.e. 15 min BEFORE
+            # the tools deploy, so on the very first deploy the package is still
+            # absent -- the timer self-enables on the next nightly services run.
+            if [ -d /home/i030983/tradingbot-tools/auditor ]; then
+              sudo systemctl enable --now trade-log-auditor.timer
+              echo "✅ trade-log-auditor.timer enabled (auditor package present)"
+            else
+              echo "⚠️  /home/i030983/tradingbot-tools/auditor not found - skipping"
+              echo "    trade-log-auditor.timer. Deploy tradingbot-tools to the VM first."
+            fi
             echo "✅ Timers enabled and active"
             echo ""
             echo "⏰ Start timer next fire:"
             systemctl show trading-bot-manager-start.timer --property=NextElapseUSecRealtime --value
             echo "⏰ Stop timer next fire:"
             systemctl show trading-bot-manager-stop.timer --property=NextElapseUSecRealtime --value
+            echo "⏰ Auditor timer next fire:"
+            systemctl show trade-log-auditor.timer --property=NextElapseUSecRealtime --value || true
           EOF
 
       - name: Show service status
@@ -217,8 +347,10 @@ jobs:
 
       - name: Create deployment record
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
-            RECORD_FILE="$HOME/systemd-deployments.log"
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Services deployed via GitHub Actions" >> "$RECORD_FILE"
-            echo "✅ Deployment recorded"
+          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << EOF
+            mkdir -p \$HOME/systemd-backups
+            echo "${{ github.sha }}" > \$HOME/systemd-backups/latest_deployed_services_commit.txt
+            RECORD_FILE="\$HOME/systemd-deployments.log"
+            echo "\$(date -u +%Y-%m-%dT%H:%M:%SZ) commit=${{ github.sha }} — deployed via ${{ github.event_name }}" >> "\$RECORD_FILE"
+            echo "✅ Deployment recorded (commit: ${{ github.sha }})"
           EOF

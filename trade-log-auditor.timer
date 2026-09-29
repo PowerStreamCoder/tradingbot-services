@@ -1,0 +1,21 @@
+[Unit]
+Description=Schedule Trade Log Auditor (4:45 PM ET, Weekdays)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+
+[Timer]
+# 4:45 PM ET Mon-Fri: after the 4:39 PM stop timer, so the session's records are
+# final, and before the 11:00 PM learning analysis that consumes the findings.
+OnCalendar=Mon..Fri 16:45:00 America/New_York
+
+# A missed audit is a real gap in the audit trail, so catch up on the next boot
+# rather than silently skipping a session.
+Persistent=true
+
+# Randomize by up to 5 minutes so the audit does not collide with the stop timer's
+# position-cleanup window.
+RandomizedDelaySec=300
+
+Unit=trade-log-auditor.service
+
+[Install]
+WantedBy=timers.target
