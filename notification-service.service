@@ -1,0 +1,21 @@
+[Unit]
+Description=Trading Bot Notification Service
+After=network.target
+
+[Service]
+Type=simple
+User=i030983
+WorkingDirectory=/home/i030983/tradingbots
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/i030983/.trading_profile
+ExecStart=/home/i030983/venv311/bin/python3 -m notification_service.main
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=notification-service
+
+[Install]
+WantedBy=multi-user.target
