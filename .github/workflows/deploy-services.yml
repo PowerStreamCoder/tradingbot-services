@@ -23,8 +23,6 @@ jobs:
   check-and-validate:
     name: Validate & Check Changes
     runs-on: ubuntu-latest
-    env:
-      VM_HOST: ${{ secrets.VM_HOST }}
     outputs:
       should_deploy: ${{ steps.check.outputs.should_deploy }}
     steps:
@@ -47,14 +45,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify required secrets
+        run: |
+          if [ -z "${{ secrets.VM_HOST }}" ]; then
+            echo "::error::secret VM_HOST is not set for this repository"
+            exit 1
+          fi
+          if [ -z "${{ secrets.VM_SSH_KEY }}" ]; then
+            echo "::error::secret VM_SSH_KEY is not set for this repository"
+            exit 1
+          fi
+          echo "secrets present"
+
       - name: Configure SSH
-        env:
-          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "$VM_SSH_KEY" > ~/.ssh/id_rsa
+          printf '%s\n' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Check for changes since last deploy
         id: check
@@ -72,7 +80,7 @@ jobs:
           fi
 
           # Scheduled run: check if service files changed since last deploy
-          DEPLOYED_COMMIT=$(ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ env.VM_HOST }} "cat \$HOME/systemd-backups/latest_deployed_services_commit.txt 2>/dev/null || echo 'none'")
+          DEPLOYED_COMMIT=$(ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} "cat \$HOME/systemd-backups/latest_deployed_services_commit.txt 2>/dev/null || echo 'none'")
           DEPLOYED_COMMIT=$(echo "$DEPLOYED_COMMIT" | tr -d '[:space:]')
           CURRENT_COMMIT="${{ github.sha }}"
 
@@ -117,7 +125,7 @@ jobs:
                   /usr/bin/*|/bin/*) continue ;;
                 esac
                 echo "  Checking $svc → $directive → $EXEC_PATH"
-                if ! ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ env.VM_HOST }} "test -f '$EXEC_PATH' || test -d '$EXEC_PATH'" 2>/dev/null; then
+                if ! ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} "test -f '$EXEC_PATH' || test -d '$EXEC_PATH'" 2>/dev/null; then
                   echo "  ❌ MISSING on VM: $EXEC_PATH (referenced by $svc)"
                   ERRORS=$((ERRORS + 1))
                 else
@@ -142,21 +150,29 @@ jobs:
     needs: check-and-validate
     if: needs.check-and-validate.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
-    env:
-      VM_HOST: ${{ secrets.VM_HOST }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify required secrets
+        run: |
+          if [ -z "${{ secrets.VM_HOST }}" ]; then
+            echo "::error::secret VM_HOST is not set for this repository"
+            exit 1
+          fi
+          if [ -z "${{ secrets.VM_SSH_KEY }}" ]; then
+            echo "::error::secret VM_SSH_KEY is not set for this repository"
+            exit 1
+          fi
+          echo "secrets present"
+
       - name: Configure SSH
-        env:
-          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "$VM_SSH_KEY" > ~/.ssh/id_rsa
+          printf '%s\n' "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ env.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Validate service files exist
         run: |
@@ -187,7 +203,7 @@ jobs:
 
       - name: Backup current service files on VM
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             BACKUP_DIR="$HOME/systemd-backups/backup-$(date +%Y%m%d-%H%M%S)"
             mkdir -p "$BACKUP_DIR"
 
@@ -209,12 +225,12 @@ jobs:
           TIMER_FILES=$(ls *.timer 2>/dev/null || echo "")
 
           if [ -n "$SERVICE_FILES" ]; then
-            scp $SERVICE_FILES ${{ env.VM_USER }}@${{ env.VM_HOST }}:/tmp/
+            scp $SERVICE_FILES ${{ env.VM_USER }}@${{ secrets.VM_HOST }}:/tmp/
             echo "✅ Uploaded service files: $SERVICE_FILES"
           fi
 
           if [ -n "$TIMER_FILES" ]; then
-            scp $TIMER_FILES ${{ env.VM_USER }}@${{ env.VM_HOST }}:/tmp/
+            scp $TIMER_FILES ${{ env.VM_USER }}@${{ secrets.VM_HOST }}:/tmp/
             echo "✅ Uploaded timer files: $TIMER_FILES"
           fi
 
@@ -225,7 +241,7 @@ jobs:
 
       - name: Compute dynamic timer schedule from bot configs
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Computing timer schedule from bot configs..."
             cd /home/i030983/tradingbots
             python3 scripts/generate_timer_schedule.py \
@@ -236,7 +252,7 @@ jobs:
 
       - name: Install service files (requires sudo)
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Installing systemd service files..."
 
             # Copy service files to systemd directory
@@ -259,7 +275,7 @@ jobs:
 
       - name: Reload systemd daemon
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Reloading systemd daemon..."
             sudo systemctl daemon-reload
             echo "✅ Systemd daemon reloaded"
@@ -267,7 +283,7 @@ jobs:
 
       - name: Enable and restart timers
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Enabling and restarting timers..."
             sudo systemctl enable --now trading-bot-manager-start.timer
             sudo systemctl enable --now trading-bot-manager-stop.timer
@@ -297,7 +313,7 @@ jobs:
 
       - name: Show service status
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << 'EOF'
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "📊 Service Status"
@@ -347,7 +363,7 @@ jobs:
 
       - name: Create deployment record
         run: |
-          ssh ${{ env.VM_USER }}@${{ env.VM_HOST }} << EOF
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << EOF
             mkdir -p \$HOME/systemd-backups
             echo "${{ github.sha }}" > \$HOME/systemd-backups/latest_deployed_services_commit.txt
             RECORD_FILE="\$HOME/systemd-deployments.log"
