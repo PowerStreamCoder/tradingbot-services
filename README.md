@@ -75,17 +75,17 @@ python3 -m auditor --date yesterday --dry-run             # preview only
 > repository and reaches the VM through that repo's own `deploy-tools.yml`
 > (23:45 ET nightly, plus `workflow_dispatch` and a `tools-interface-changed` dispatch
 > from `tradingbot-bots`). This repo's deploy workflow copies only units, so it does
-> not deliver the code — but the nightly tools deploy does, well before the 16:45 ET
-> audit.
+> not deliver the code — but it is scheduled at 23:55 ET, 10 minutes *after* the tools
+> deploy, so the package is always on the VM before the 16:45 ET audit.
 >
 > The deploy job enables `trade-log-auditor.timer` only when
 > `/home/i030983/tradingbot-tools/auditor` exists, and the unit's `ExecStartPre`
-> guards fail with a clear message instead of an import error. **First-deploy
-> caveat:** this workflow runs at 23:30 ET, 15 minutes *before* the tools deploy, so
-> on the very first run the package is not there yet and the timer self-enables on
-> the next nightly services run. If the auditor is not auditing after two nights,
-> confirm the code landed (`ls /home/i030983/tradingbot-tools/auditor`) before
-> investigating the unit. See
+> guards fail with a clear message instead of an import error. The guard is
+> belt-and-braces rather than an expected delay: the 10-minute gap is deliberate, so
+> the timer comes up on the very first night. If the auditor is not auditing, confirm
+> the code landed (`ls /home/i030983/tradingbot-tools/auditor`) and that the timer is
+> enabled (`systemctl is-enabled trade-log-auditor.timer`) before investigating the
+> unit. See
 > [TRADE_LOG_AUDITOR_DESIGN.md](../tradingbot-documentation/designDocs/TRADE_LOG_AUDITOR_DESIGN.md).
 
 ### Direct CLI Bot Inspection

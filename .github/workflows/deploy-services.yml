@@ -1,11 +1,12 @@
 name: Deploy Services to VM (Daily Sync & Manual)
 
-# Aligned with tradingbot-bots daily deploy at 03:00 UTC — runs 30 min later
-# to ensure bots code is already on the VM before validating service paths.
+# Runs 10 min AFTER the tradingbot-tools deploy (03:45 UTC) so the auditor
+# package is already on the VM and the timer can be enabled the same night.
+# It still runs after tradingbot-bots (03:00 UTC), which the auditor imports from.
 on:
   schedule:
-    # Mon-Fri at 03:30 UTC (30 min after bots daily deploy)
-    - cron: '30 3 * * 2-6'
+    # Mon-Fri at 03:55 UTC (10 min after the tools deploy at 03:45 UTC)
+    - cron: '55 3 * * 2-6'
   repository_dispatch:
     types: [services-paths-changed]  # triggered by bots deploy when ExecStart paths change
   workflow_dispatch:
@@ -291,9 +292,11 @@ jobs:
             # This workflow ships only units; the auditor code arrives via
             # tradingbot-tools' own deploy-tools.yml (23:45 ET nightly). Enabling
             # unconditionally would queue a unit whose ExecStartPre fails every
-            # afternoon. Note this workflow runs at 23:30 ET, i.e. 15 min BEFORE
-            # the tools deploy, so on the very first deploy the package is still
-            # absent -- the timer self-enables on the next nightly services run.
+            # afternoon. This workflow is scheduled at 23:55 ET, 10 min AFTER the
+            # tools deploy, so the package is normally already present and the timer
+            # comes up the same night. The check stays as a guard: if a tools deploy
+            # was skipped or failed, skip the timer and say so rather than arming a
+            # unit that would fail all afternoon.
             if [ -d /home/i030983/tradingbot-tools/auditor ]; then
               sudo systemctl enable --now trade-log-auditor.timer
               echo "✅ trade-log-auditor.timer enabled (auditor package present)"
