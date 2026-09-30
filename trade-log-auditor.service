@@ -19,8 +19,9 @@ Group=i030983
 # The auditor code lives in the tradingbot-tools repository and is deployed to this
 # path by that repo's own deploy-tools.yml (23:45 ET nightly, plus manual dispatch).
 # The tradingbot-services workflow ships only .service/.timer files, so it does not
-# deliver the code itself -- but the nightly tools deploy does, hours before this
-# unit runs. Check prerequisites in ExecStartPre; the run aborts with an actionable
+# deliver the code itself -- but it is scheduled at 23:55 ET, 10 minutes after the
+# tools deploy, so the package is present and the timer can be enabled the same
+# night. Check prerequisites in ExecStartPre; the run aborts with an actionable
 # message rather than a bare "No module named auditor".
 ExecStartPre=/usr/bin/test -d /home/i030983/tradingbot-tools/auditor
 ExecStartPre=/usr/bin/test -d /home/i030983/tradingbots/trading
