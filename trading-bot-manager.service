@@ -6,6 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=i030983
+Group=i030983
 WorkingDirectory=/home/i030983/tradingbots
 Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONUSERBASE=/home/i030983/.local"
