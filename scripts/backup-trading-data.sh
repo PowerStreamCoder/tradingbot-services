@@ -13,7 +13,7 @@ tar -czf "$BACKUP_FILE" \
     tradingbot-config \
     .ibgateway.env 2>/dev/null
 
-# Keep only last 14 days of backups (delete older)
-find "$BACKUP_DIR" -name "trading-state-*.tar.gz" -mtime +14 -delete
-
 echo "Backup created: $BACKUP_FILE"
+
+# Enforce strict maximum of 3 backups (FIFO: delete oldest when count > 3)
+ls -dt "$BACKUP_DIR"/trading-state-*.tar.gz 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
