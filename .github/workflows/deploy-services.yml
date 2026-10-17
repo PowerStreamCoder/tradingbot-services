@@ -81,7 +81,7 @@ jobs:
           fi
 
           # Scheduled run: check if service files changed since last deploy
-          DEPLOYED_COMMIT=$(ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} "cat \$HOME/systemd-backups/latest_deployed_services_commit.txt 2>/dev/null || echo 'none'")
+          DEPLOYED_COMMIT=$(ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} "cat \$HOME/backups/services/latest_deployed_services_commit.txt 2>/dev/null || cat \$HOME/systemd-backups/latest_deployed_services_commit.txt 2>/dev/null || echo 'none'")
           DEPLOYED_COMMIT=$(echo "$DEPLOYED_COMMIT" | tr -d '[:space:]')
           CURRENT_COMMIT="${{ github.sha }}"
 
@@ -205,7 +205,7 @@ jobs:
       - name: Backup current service files on VM
         run: |
           ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
-            BACKUP_DIR="$HOME/systemd-backups/backup-$(date +%Y%m%d-%H%M%S)"
+            BACKUP_DIR="$HOME/backups/services/backup-$(date +%Y%m%d-%H%M%S)"
             mkdir -p "$BACKUP_DIR"
 
             # Backup existing service files
@@ -215,8 +215,8 @@ jobs:
 
             echo "✅ Backup created: $BACKUP_DIR"
 
-            # Keep only last 5 backups
-            ls -dt $HOME/systemd-backups/backup-* | tail -n +6 | xargs rm -rf
+            # Keep only last 3 backups (FIFO)
+            ls -dt $HOME/backups/services/backup-* 2>/dev/null | tail -n +4 | xargs rm -rf || true
           EOF
 
       - name: Upload service files to VM (systemd files only)
@@ -367,9 +367,9 @@ jobs:
       - name: Create deployment record
         run: |
           ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << EOF
-            mkdir -p \$HOME/systemd-backups
-            echo "${{ github.sha }}" > \$HOME/systemd-backups/latest_deployed_services_commit.txt
-            RECORD_FILE="\$HOME/systemd-deployments.log"
+            mkdir -p \$HOME/backups/services \$HOME/logs
+            echo "${{ github.sha }}" > \$HOME/backups/services/latest_deployed_services_commit.txt
+            RECORD_FILE="\$HOME/logs/systemd-deployments.log"
             echo "\$(date -u +%Y-%m-%dT%H:%M:%SZ) commit=${{ github.sha }} — deployed via ${{ github.event_name }}" >> "\$RECORD_FILE"
             echo "✅ Deployment recorded (commit: ${{ github.sha }})"
           EOF
