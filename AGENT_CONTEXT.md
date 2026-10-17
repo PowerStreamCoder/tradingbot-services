@@ -50,6 +50,13 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 Edit `OnCalendar=` in `trading-bot-manager-start.timer` or `trading-bot-manager-stop.timer`.
 Format: `Mon-Fri *-*-* HH:MM:SS America/New_York`
 
+### VNC Desktop Access (IB Gateway GUI)
+Port 5900 is restricted to localhost (blocked on all external network interfaces).
+To access the IB Gateway GUI:
+1. Open an SSH tunnel:
+   `gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5900:localhost:5900`
+2. Connect your local VNC viewer to `vnc://localhost:5900`
+
 ## Documentation
 - System overview: `../tradingbot-documentation/guides/SYSTEM_OVERVIEW.md`
 - VM organization: `../tradingbot-documentation/architecture/VM_ORGANIZATION.md`
