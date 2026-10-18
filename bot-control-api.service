@@ -1,18 +1,31 @@
 [Unit]
 Description=Bot Control API Server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=i030983
+Group=i030983
 WorkingDirectory=/home/i030983/tradingbots
 Environment="PYTHONPATH=/home/i030983/tradingbots"
+
+# Allow systemctl commands without password
+Environment="SUDO_ASKPASS=/bin/false"
+
+# Trading profile env file, the same one the manager service consumes. The
+# leading '-' keeps it optional so a missing file cannot block the always-on API.
+EnvironmentFile=-/home/i030983/.trading_profile
+
 ExecStart=/home/i030983/venv311/bin/python3 /home/i030983/tradingbots/trading/bot_control_api.py
 Restart=always
 RestartSec=10
 
-# Allow systemctl commands without password
-Environment="SUDO_ASKPASS=/bin/false"
+# Logging: match the other services so `journalctl -t bot-control-api` works and
+# the output is filterable by the notification pipeline.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bot-control-api
 
 [Install]
 WantedBy=multi-user.target
