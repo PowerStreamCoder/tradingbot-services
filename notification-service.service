@@ -2,6 +2,11 @@
 Description=Trading Bot Notification Service
 After=network.target
 
+# Page the operator if this unit fails (issue #25). Deliberately independent of
+# the notifier itself: alerts go straight over SMTP via services/notify_alert.py,
+# so this service being down cannot mute its own failure report.
+OnFailure=service-failure-notifier@%n.service
+
 [Service]
 Type=simple
 User=i030983

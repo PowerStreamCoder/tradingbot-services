@@ -94,17 +94,19 @@ jobs:
             exit 0
           fi
 
-          # Check if only non-service files changed (README, scripts, etc.)
+          # Check if only non-service files changed (README, docs, etc.)
+          # scripts/ counts as deployable: the health check, cron wrapper and
+          # systemd failure hook live there and must reach the VM.
           if [ "$DEPLOYED_COMMIT" != "none" ] && git rev-parse "$DEPLOYED_COMMIT" >/dev/null 2>&1; then
-            CHANGED_SERVICES=$(git diff --name-only "$DEPLOYED_COMMIT" "$CURRENT_COMMIT" -- '*.service' '*.timer' | wc -l)
+            CHANGED_SERVICES=$(git diff --name-only "$DEPLOYED_COMMIT" "$CURRENT_COMMIT" -- '*.service' '*.timer' 'scripts/*' | wc -l)
             if [ "$CHANGED_SERVICES" -eq 0 ]; then
-              echo "✅ No .service/.timer file changes since last deploy. Skipping."
+              echo "✅ No .service/.timer/scripts changes since last deploy. Skipping."
               echo "should_deploy=false" >> $GITHUB_OUTPUT
               exit 0
             fi
           fi
 
-          echo "🔍 Service/timer file changes detected. Proceeding to deploy."
+          echo "🔍 Service/timer/script changes detected. Proceeding to deploy."
           echo "should_deploy=true" >> $GITHUB_OUTPUT
 
       - name: Cross-repo path validation (ExecStart targets)
@@ -213,15 +215,20 @@ jobs:
             sudo cp /etc/systemd/system/trading-bot-*.timer "$BACKUP_DIR/" 2>/dev/null || true
             sudo cp /etc/systemd/system/bot-control-api.service "$BACKUP_DIR/" 2>/dev/null || true
 
+            # Back up the operational scripts that this workflow now ships.
+            if [ -d "$HOME/scripts" ]; then
+              cp -a "$HOME/scripts" "$BACKUP_DIR/scripts" 2>/dev/null || true
+            fi
+
             echo "✅ Backup created: $BACKUP_DIR"
 
             # Keep only last 3 backups (FIFO)
             ls -dt $HOME/backups/services/backup-* 2>/dev/null | tail -n +4 | xargs rm -rf || true
           EOF
 
-      - name: Upload service files to VM (systemd files only)
+      - name: Upload service files to VM (systemd files + operational scripts)
         run: |
-          # Only upload .service and .timer files (exclude everything else)
+          # Upload .service/.timer files and the operational scripts/ tree.
           SERVICE_FILES=$(ls *.service 2>/dev/null || echo "")
           TIMER_FILES=$(ls *.timer 2>/dev/null || echo "")
 
@@ -235,10 +242,15 @@ jobs:
             echo "✅ Uploaded timer files: $TIMER_FILES"
           fi
 
+          if [ -d scripts ] && [ -n "$(ls -A scripts 2>/dev/null)" ]; then
+            scp -r scripts ${{ env.VM_USER }}@${{ secrets.VM_HOST }}:/tmp/scripts-upload
+            echo "✅ Uploaded scripts/: $(ls scripts)"
+          fi
+
           echo ""
           echo "📋 Files NOT uploaded (excluded):"
-          echo "  ❌ Tests, docs, README.md, scripts, etc."
-          echo "  ✅ Only systemd unit files deployed"
+          echo "  ❌ Tests, docs, README.md, etc."
+          echo "  ✅ systemd unit files + scripts/ deployed"
 
       - name: Compute dynamic timer schedule from bot configs
         run: |
@@ -268,8 +280,26 @@ jobs:
             sudo chmod 644 /etc/systemd/system/trading-bot-*.timer 2>/dev/null || true
             sudo chmod 644 /etc/systemd/system/bot-control-api.service 2>/dev/null || true
 
+            # Units whose names are not matched by the globs above.
+            for unit in notification-service.service trade-log-auditor.service \
+                        trade-log-auditor.timer learning-analysis.service \
+                        learning-analysis.timer "service-failure-notifier@.service"; do
+              sudo chown root:root "/etc/systemd/system/$unit" 2>/dev/null || true
+              sudo chmod 644 "/etc/systemd/system/$unit" 2>/dev/null || true
+            done
+
             # Clean up temp files
             rm /tmp/*.service /tmp/*.timer 2>/dev/null || true
+
+            # Install the operational scripts. These run from cron and from the
+            # systemd failure hook, so they must be executable by i030983.
+            if [ -d /tmp/scripts-upload ]; then
+              mkdir -p "$HOME/scripts"
+              cp -a /tmp/scripts-upload/. "$HOME/scripts/"
+              chmod +x "$HOME/scripts"/*.sh 2>/dev/null || true
+              rm -rf /tmp/scripts-upload
+              echo "✅ Scripts installed: $(ls "$HOME/scripts")"
+            fi
 
             echo "✅ Service files installed"
           EOF
@@ -279,7 +309,30 @@ jobs:
           ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Reloading systemd daemon..."
             sudo systemctl daemon-reload
-            echo "✅ Systemd daemon reloaded"
+
+            # Validate what was just installed.
+            #
+            # systemd-analyze verify exits 0 even when it *ignores* an unknown
+            # directive, so its output has to be inspected rather than its exit
+            # code. Without this, a misplaced directive installs cleanly and
+            # silently does nothing -- which is exactly how SuccessExitStatus=
+            # ended up ignored under [Unit] instead of [Service] (issue #25).
+            # Healthy units produce no output at all.
+            PROBLEMS=$(sudo systemd-analyze verify \
+              /etc/systemd/system/trading-bot-*.service \
+              /etc/systemd/system/trading-bot-*.timer \
+              /etc/systemd/system/bot-control-api.service \
+              /etc/systemd/system/notification-service.service \
+              /etc/systemd/system/trade-log-auditor.service \
+              /etc/systemd/system/learning-analysis.service \
+              "/etc/systemd/system/service-failure-notifier@.service" 2>&1 \
+              | grep -v snapd || true)
+            if [ -n "$PROBLEMS" ]; then
+              echo "systemd ignored or rejected part of the deployed units:"
+              echo "$PROBLEMS"
+              exit 1
+            fi
+            echo "Systemd daemon reloaded; deployed units validated"
           EOF
 
       - name: Enable and restart timers

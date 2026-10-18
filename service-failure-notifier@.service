@@ -1,0 +1,32 @@
+[Unit]
+Description=Email the operator when %i fails
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+# Instantiated by the failed unit's own OnFailure= directive, e.g.
+#   OnFailure=service-failure-notifier@%n.service
+# from trading-bot-manager.service, so %i is the failed unit's full name
+# ("trading-bot-manager.service"). Template units are not enabled or started
+# directly; systemd starts this instance the moment the owning unit enters the
+# failed state, including a failed ExecStop or a start-timeout.
+#
+# Deliberately NOT ordered after / bound to the failed unit: this runs precisely
+# when that unit is gone, and it must not be able to delay recovery.
+#
+# It is also deliberately independent of the notification-service daemon. Alerts
+# are sent straight over SMTP by services/notify_alert.py, so a failure of the
+# notifier itself (or of Firestore) cannot mute a failure of anything else.
+
+[Service]
+Type=oneshot
+User=i030983
+Group=i030983
+# Reads the failed unit's journal tail; `adm` group membership grants that.
+ExecStart=/home/i030983/scripts/systemd-failure-notify.sh %i
+
+# One attempt only: the operator needs to hear about the fault, not about a
+# retry storm. notify_alert.py additionally throttles repeats per unit to 1/hour.
+Restart=no
+TimeoutStartSec=60s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=service-failure-notifier

@@ -5,6 +5,10 @@ After=network-online.target
 Wants=network-online.target
 Requires=network-online.target
 
+# Page the operator if this unit fails (issue #25). The nightly learning pass is a
+# one-shot; a silent failure used to be invisible until someone read the journal.
+OnFailure=service-failure-notifier@%n.service
+
 [Service]
 Type=oneshot
 User=i030983
