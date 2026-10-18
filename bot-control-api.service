@@ -3,6 +3,11 @@ Description=Bot Control API Server
 After=network-online.target
 Wants=network-online.target
 
+# Page the operator if this unit fails (issue #25). Restart=always means a
+# crash-loop is restarted automatically, but the failure is still reported (and
+# throttled to one email per hour by notify_alert.py).
+OnFailure=service-failure-notifier@%n.service
+
 [Service]
 Type=simple
 User=i030983

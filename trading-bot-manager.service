@@ -4,6 +4,11 @@ Documentation=file:///home/i030983/tradingbots/services/README.md
 After=network-online.target
 Wants=network-online.target
 
+# Page the operator if this unit fails (issue #25). A clean stop from the stop
+# timer is a normal exit and does NOT fire OnFailure; only a crash, a failed
+# ExecStop, a start timeout, or a fatal signal does.
+OnFailure=service-failure-notifier@%n.service
+
 [Service]
 Type=simple
 User=i030983

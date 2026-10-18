@@ -11,10 +11,23 @@ Requires=network-online.target
 After=trading-bot-manager-stop.timer
 Wants=trading-bot-manager-stop.timer
 
+# Page the operator if this unit fails (issue #25). Findings themselves are
+# already emailed by the auditor's own notify stage (--send-alerts), so the alert
+# here is about the job breaking, not about what it found. SuccessExitStatus in
+# [Service] keeps exit 3 (INCONCLUSIVE, e.g. a session with no trades) from
+# marking the unit failed; exit 1 (critical findings OR an unhandled crash) and
+# exit 2 (usage/config error) still fire the alert.
+OnFailure=service-failure-notifier@%n.service
+
 [Service]
 Type=oneshot
 User=i030983
 Group=i030983
+
+# Exit 3 is INCONCLUSIVE: a legitimate verdict, not a failure. Declared here --
+# SuccessExitStatus is a [Service] directive, and systemd silently ignores it in
+# [Unit] (caught by `systemd-analyze verify`).
+SuccessExitStatus=0 3
 
 # The auditor code lives in the tradingbot-tools repository and is deployed to this
 # path by that repo's own deploy-tools.yml (23:45 ET nightly, plus manual dispatch).
