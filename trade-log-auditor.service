@@ -45,7 +45,12 @@ Environment=PYTHONPATH=/home/i030983/tradingbot-tools
 # whole run while the auditor asks for that same lock through its own file
 # descriptor, so every run aborts with "Another auditor instance is already
 # running" (issue #98).
-ExecStart=/usr/bin/python3 -m auditor --date yesterday --publish-proposals --send-alerts
+#
+# `--date latest` resolves to the most recent session before today (Monday audits
+# Friday; weekends are skipped), so this Mon-Fri timer never targets a closed day.
+# The resolved ISO date - not the keyword - keys the auditor's memory lifecycle,
+# alerts and report filenames (tradingbot-tools#102).
+ExecStart=/usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts
 
 StandardOutput=journal
 StandardError=journal
