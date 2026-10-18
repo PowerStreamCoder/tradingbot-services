@@ -36,9 +36,16 @@ Environment=PYTHONPATH=/home/i030983/tradingbot-tools
 # read-only against live trading state; its only writes are the audit_* collections,
 # its own memory/report files, pending_review learning candidates, and notifications.
 #
-# flock: a manual re-run and the timer must never reconcile memory concurrently.
-# -n fails fast instead of queueing behind a long audit.
-ExecStart=/usr/bin/flock -n /tmp/trade_log_auditor.lock /usr/bin/python3 -m auditor --date yesterday --publish-proposals --send-alerts
+# Mutual exclusion: the auditor enforces single-instance itself, taking an
+# exclusive, non-blocking flock on /tmp/trade_log_auditor.lock
+# (auditor/cli.py::_acquire_lock) and failing fast when another run -- e.g. a
+# documented manual `python3 -m auditor` -- is already reconciling memory.
+#
+# Do NOT also wrap ExecStart in `flock`: the outer flock holds the lock for the
+# whole run while the auditor asks for that same lock through its own file
+# descriptor, so every run aborts with "Another auditor instance is already
+# running" (issue #98).
+ExecStart=/usr/bin/python3 -m auditor --date yesterday --publish-proposals --send-alerts
 
 StandardOutput=journal
 StandardError=journal
