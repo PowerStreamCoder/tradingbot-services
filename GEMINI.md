@@ -1,3 +1,4 @@
+<!-- Auto-generated from AGENT_CONTEXT.md — do not edit manually -->
 # Services — AI Agent Context
 
 ## Main entry points
@@ -14,6 +15,7 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 
 ## Important commands
 - Deploy (install/update service files on VM): copy files to `/etc/systemd/system/` then `systemctl daemon-reload`
+- **Do NOT trigger the VM deploy manually.** The services deploy reloads systemd and restarts `trading-bot-manager`, which bounces the whole trading fleet. Commit + push and let the **daily scheduled deploy** deliver it. A manual deploy is allowed only when it is **urgent and mandatory** (a live incident or a broken VM state that cannot wait for the schedule) — say why before triggering it, and prefer the pre-market window (the fleet is stopped 16:39 ET → 08:51 ET).
 - Check service status: `sudo systemctl status trading-bot-manager`
 - Restart bots: `sudo systemctl restart trading-bot-manager`
 - Check bot control API: `sudo systemctl status bot-control-api`
