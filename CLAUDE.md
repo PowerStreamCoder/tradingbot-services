@@ -1,3 +1,4 @@
+<!-- Auto-generated from AGENT_CONTEXT.md — do not edit manually -->
 # Services — AI Agent Context
 
 ## Main entry points
@@ -10,23 +11,20 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 - `trading-bot-manager-stop.service` — One-shot stop trigger
 - `bot-control-api.service` — Dashboard command API (always-running, `Restart=always`)
 - `learning-analysis.service` + `.timer` — Nightly ML analysis at 11:00 PM ET Mon-Fri
-- `notification-service.service` — Standalone notification service (always-running, `Restart=always`)
 - `stop_bots.sh` — Graceful shutdown script (30s timeout for position cleanup)
 
 ## Important commands
 - Deploy (install/update service files on VM): copy files to `/etc/systemd/system/` then `systemctl daemon-reload`
+- **Do NOT trigger the VM deploy manually.** The services deploy reloads systemd and restarts `trading-bot-manager`, which bounces the whole trading fleet. Commit + push and let the **daily scheduled deploy** deliver it. A manual deploy is allowed only when it is **urgent and mandatory** (a live incident or a broken VM state that cannot wait for the schedule) — say why before triggering it, and prefer the pre-market window (the fleet is stopped 16:39 ET → 08:51 ET).
 - Check service status: `sudo systemctl status trading-bot-manager`
 - Restart bots: `sudo systemctl restart trading-bot-manager`
 - Check bot control API: `sudo systemctl status bot-control-api`
-- Check notification service: `sudo systemctl status notification-service`
 - View logs: `journalctl -u trading-bot-manager -f`
-- View notification logs: `journalctl -u notification-service -f`
 
 ## Common mappings
 - Bot manager process: `trading-bot-manager.service` → runs `tradingbot-bots/services/bot_manager.py`
 - Dashboard command API: `bot-control-api.service` → runs `tradingbot-bots/trading/bot_control_api.py`
 - Auto-start schedule: `trading-bot-manager-start.timer` (8:51 AM ET) + `trading-bot-manager-stop.timer` (4:39 PM ET)
-- Notification service: `notification-service.service` → runs `tradingbot-bots/notification_service/main.py` (module entry)
 - Trading profile env var: sourced from `/home/i030983/.trading_profile` at service start
 - Bot code deploy path on VM: `/home/i030983/tradingbots`
 
@@ -40,7 +38,6 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 - This repo is infrastructure-only — Python logic is in `tradingbot-bots/`, config is in `tradingbot-config/`
 - `trading-bot-manager.service` has `Restart=no` — lifecycle is controlled by the timers, not auto-restart
 - `bot-control-api.service` has `Restart=always, RestartSec=10` — it should always be running
-- `notification-service.service` has `Restart=always, RestartSec=10` — it should always be running
 - `stop_bots.sh` gives a 30-second window for bots to close open positions before hard kill
 - `learning-analysis.service` has memory (1 GB) and CPU (50%) limits to avoid VM resource exhaustion
 
@@ -62,6 +59,10 @@ To access the IB Gateway GUI:
    `gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5900:localhost:5900`
 2. Connect your local VNC viewer to `vnc://localhost:5900`
 
-## Existing docs
+## Documentation
+- System overview: `../tradingbot-documentation/guides/SYSTEM_OVERVIEW.md`
 - VM organization: `../tradingbot-documentation/architecture/VM_ORGANIZATION.md`
-- Deployment guide: `../tradingbot-documentation/deployment/`
+- Services README: `../tradingbot-documentation/services/README.md`
+- Deployment guide: `../tradingbot-documentation/deployment/README_DEPLOY.md`
+- Operator runbook: `../tradingbot-documentation/guides/OPERATOR_RUNBOOK.md`
+- Fixes & incident history: `../tradingbot-documentation/reviews/FIXES_LOG.md`
