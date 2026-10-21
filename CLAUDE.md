@@ -17,6 +17,10 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 - Deploy (install/update service files on VM): copy files to `/etc/systemd/system/` then `systemctl daemon-reload`
 - **Do NOT trigger the VM deploy manually.** The services deploy reloads systemd and restarts `trading-bot-manager`, which bounces the whole trading fleet. Commit + push and let the **daily scheduled deploy** deliver it. A manual deploy is allowed only when it is **urgent and mandatory** (a live incident or a broken VM state that cannot wait for the schedule) — say why before triggering it, and prefer the pre-market window (the fleet is stopped 16:39 ET → 08:51 ET).
 - Check service status: `sudo systemctl status trading-bot-manager`
+- **Check the fleet on the VM from the workstation (read-only, no deploy needed):**
+  `IP=$(gcloud compute instances list --filter=name=trading-bot-vm --format='value(networkInterfaces[0].accessConfigs[0].natIP)')` then
+  `ssh -i ~/.ssh/tradingbot_deploy i030983@$IP 'systemctl is-active trading-bot-manager; ps -eo cmd | grep "[l]auncher.py" | wc -l; systemctl list-timers --all | grep trading-bot-manager'`.
+  The VM's external IP is **not fixed** — always re-resolve it with `gcloud compute instances list` (instance `trading-bot-vm`, zone `us-central1-a`); a stale IP times out and is mistaken for an unreachable VM. Off-hours the manager unit is `active` with **0 bots running** — that is the healthy state; the fleet trades 08:51 → 16:39 ET.
 - Restart bots: `sudo systemctl restart trading-bot-manager`
 - Check bot control API: `sudo systemctl status bot-control-api`
 - View logs: `journalctl -u trading-bot-manager -f`
