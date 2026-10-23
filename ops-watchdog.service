@@ -1,0 +1,37 @@
+[Unit]
+Description=Operational Watchdog (stale locks, missed runs, swap, ownership, hygiene)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+After=network-online.target
+Wants=network-online.target
+
+# Page the operator if the watchdog itself fails (issue #310). The script is a
+# reporter that always exits 0 on its own faults, so reaching this OnFailure means
+# the script could not run at all (missing interpreter, bad path) -- which would
+# otherwise silently blind the very monitoring that exists to catch silence.
+OnFailure=service-failure-notifier@%n.service
+
+[Service]
+Type=oneshot
+User=i030983
+Group=i030983
+WorkingDirectory=/home/i030983/tradingbots
+
+# Reads /tmp lock files, systemd timer state, free/df, and the data/config trees,
+# then publishes a Firestore snapshot for the daily digest. Read-only against all
+# trading state. The script owns its own alert throttling via notify_alert.py.
+ExecStart=/home/i030983/scripts/ops-watchdog.sh
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ops-watchdog
+
+# Cheap, bounded scan. A hung watchdog must not accumulate.
+TimeoutStartSec=120s
+MemoryMax=256M
+CPUQuota=25%
+
+# One-shot driven by the timer; nothing to restart.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

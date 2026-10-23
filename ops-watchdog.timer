@@ -1,0 +1,26 @@
+[Unit]
+Description=Schedule Operational Watchdog (every 15 minutes)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+Requires=ops-watchdog.service
+
+[Timer]
+# Every 15 minutes, around the clock. Stale locks and missed scheduled runs are
+# time-sensitive and happen off-hours too (the nightly backup/auditor/learning
+# jobs run when the fleet is stopped), so unlike the market timers this does not
+# gate on trading hours. The filesystem-hygiene checks self-gate to once per day
+# inside the script.
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+# A missed tick is not worth catching up on retroactively: the next tick will
+# observe current state. Avoids a boot-time stampede of backfilled runs.
+Persistent=false
+
+# Spread load off the exact quarter-hour so this never lines up with the market
+# start/stop timers or the nightly jobs it watches.
+RandomizedDelaySec=120
+
+Unit=ops-watchdog.service
+
+[Install]
+WantedBy=timers.target

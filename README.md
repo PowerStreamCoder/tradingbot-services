@@ -15,6 +15,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **Nightly Learning Analysis Unit (`learning-analysis.service` / `.timer`)**: Runs post-market learning analysis at 11:00 PM ET.
 - **24/7 Notification Watchdog (`notification-service.service`)**: Standalone watchdog monitoring Firestore for hung bots, daily loss thresholds, and option assignment risks.
 - **Automated Failure Alerting (`service-failure-notifier@.service`)**: Systemd failure hook that alerts operators immediately via email whenever any monitored service, timer, or cron job fails (#25).
+- **Operational Watchdog (`ops-watchdog.service` / `.timer`)**: Runs `scripts/ops-watchdog.sh` every 15 minutes to catch the *silent* failure modes a VM audit surfaced (#310): stale lock files (#98), missed scheduled runs, swap saturation, data/config ownership drift (#297), and filesystem-hygiene drift. Alerts flow through the same `notify_alert.py` pipeline, and a compact health snapshot is published to Firestore (`system_health/current`) for the daily digest.
 - **Operational Health & Backup Scripts**: Automated VM diagnostics (`scripts/health-check.sh`) and database backup retention (`scripts/backup-trading-data.sh`).
 
 ---
@@ -34,9 +35,12 @@ tradingbot-services/
 ├── learning-analysis.timer                # Schedules learning analysis at 11:00 PM ET
 ├── notification-service.service           # 24/7 background Firestore notification watchdog
 ├── service-failure-notifier@.service      # Dynamic systemd OnFailure notification unit
+├── ops-watchdog.service                   # Operational watchdog (oneshot): locks, missed runs, swap, ownership, hygiene
+├── ops-watchdog.timer                     # Schedules the operational watchdog every 15 minutes
 ├── stop_bots.sh                           # Orderly shutdown and state preservation script
 ├── scripts/                               # Operational diagnostics and automation scripts
 │   ├── health-check.sh                    # Automated system, socket, and memory health check
+│   ├── ops-watchdog.sh                    # Stale-lock / missed-run / swap / ownership / hygiene watchdog (#310)
 │   ├── backup-trading-data.sh             # Operational backup script for trading data
 │   ├── systemd-failure-notify.sh          # Dispatches alerts when systemd units fail
 │   ├── cron-run.sh                        # Wrapper for cron job execution with error capture

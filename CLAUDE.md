@@ -11,6 +11,7 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 - `trading-bot-manager-stop.service` — One-shot stop trigger
 - `bot-control-api.service` — Dashboard command API (always-running, `Restart=always`)
 - `learning-analysis.service` + `.timer` — Nightly ML analysis at 11:00 PM ET Mon-Fri
+- `ops-watchdog.service` + `.timer` — Operational watchdog every 15 min (`scripts/ops-watchdog.sh`): stale locks, missed scheduled runs, swap, data/config ownership, filesystem hygiene (#310). Emits via `tradingbot-bots/services/notify_alert.py` and publishes `system_health/current` to Firestore for the daily digest.
 - `stop_bots.sh` — Graceful shutdown script (30s timeout for position cleanup)
 
 ## Important commands
@@ -36,6 +37,7 @@ All Python code (including the bot manager) lives in `tradingbot-bots/`.
 - If bots didn't start at market open: check `systemctl status trading-bot-manager-start.timer` and `journalctl -u trading-bot-manager`
 - If bot-control-api is crashing (CHDIR loop): verify `WorkingDirectory` in `bot-control-api.service` points to the correct path; this was a known bug
 - If changes to service files have no effect: run `systemctl daemon-reload` after copying to `/etc/systemd/system/`
+- If a scheduled job silently stopped or a `/tmp/*.lock` went stale (#98/#310): check `ops-watchdog.service` (`journalctl -u ops-watchdog`, `~/logs/ops-watchdog.log`); the watchdog clears stale locks it reports via the remediation line in its alert, and `~/logs/health-state/` holds its fault markers.
 - Never read the entire repository unless explicitly required
 
 ## Architecture notes
