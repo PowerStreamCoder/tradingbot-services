@@ -1,0 +1,34 @@
+# /etc/logrotate.d/tradingbots
+# Logrotate policy for trading bot execution metrics telemetry (.ndjson) and application logs (.log).
+# Daily rotation, compress, 14 days retention, copytruncate to avoid interrupting running bot processes.
+
+/home/i030983/tradingbots/data/*/execution_metrics/*.ndjson
+/home/i030983/tradingbots/logs/execution_metrics/*.ndjson
+{
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0644 i030983 i030983
+    dateext
+    dateformat -%Y%m%d
+}
+
+/home/i030983/tradingbots/data/*/*.log
+/home/i030983/tradingbots/logs/*.log
+/home/i030983/logs/*.log
+{
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0644 i030983 i030983
+    dateext
+    dateformat -%Y%m%d
+}
