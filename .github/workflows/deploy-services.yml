@@ -247,6 +247,11 @@ jobs:
             echo "✅ Uploaded scripts/: $(ls scripts)"
           fi
 
+          if [ -f tradingbots.logrotate ]; then
+            scp tradingbots.logrotate ${{ env.VM_USER }}@${{ secrets.VM_HOST }}:/tmp/
+            echo "✅ Uploaded logrotate config: tradingbots.logrotate"
+          fi
+
           echo ""
           echo "📋 Files NOT uploaded (excluded):"
           echo "  ❌ Tests, docs, README.md, etc."
@@ -299,6 +304,15 @@ jobs:
               chmod +x "$HOME/scripts"/*.sh 2>/dev/null || true
               rm -rf /tmp/scripts-upload
               echo "✅ Scripts installed: $(ls "$HOME/scripts")"
+            fi
+
+            # Install logrotate configuration for trading bot telemetry and logs
+            if [ -f /tmp/tradingbots.logrotate ]; then
+              sudo cp /tmp/tradingbots.logrotate /etc/logrotate.d/tradingbots
+              sudo chown root:root /etc/logrotate.d/tradingbots
+              sudo chmod 644 /etc/logrotate.d/tradingbots
+              rm -f /tmp/tradingbots.logrotate
+              echo "✅ Logrotate policy installed to /etc/logrotate.d/tradingbots"
             fi
 
             echo "✅ Service files installed"

@@ -317,6 +317,14 @@ Remediation: review and remove them (git status will show tracked ones)." \
             report 0 hygiene-backups medium "Backup directory over size/age limits" ""
         fi
     fi
+
+    # 5c. Telemetry log directory hygiene (.ndjson retention: 14 days).
+    # Prunes old rotated / compressed ndjson files exceeding retention policy.
+    for metrics_dir in $HOME/tradingbots/data/*/execution_metrics $HOME/tradingbots/logs/execution_metrics; do
+        [ -d "$metrics_dir" ] || continue
+        find "$metrics_dir" -type f \( -name '*.ndjson.*' -o -name '*.ndjson-*.gz' -o -name '*.ndjson.gz' \) \
+             -mtime "+${BACKUP_MAX_AGE_DAYS}" -delete 2>/dev/null || true
+    done
 fi
 # backups_ok only reflects a day we actually scanned; on skipped runs keep the
 # last published value neutral-positive so the digest is not falsely alarming.

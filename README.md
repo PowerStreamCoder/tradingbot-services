@@ -37,6 +37,7 @@ tradingbot-services/
 ├── service-failure-notifier@.service      # Dynamic systemd OnFailure notification unit
 ├── ops-watchdog.service                   # Operational watchdog (oneshot): locks, missed runs, swap, ownership, hygiene
 ├── ops-watchdog.timer                     # Schedules the operational watchdog every 15 minutes
+├── tradingbots.logrotate                  # Standard daily logrotate policy (14-day retention, compress, copytruncate)
 ├── stop_bots.sh                           # Orderly shutdown and state preservation script
 ├── scripts/                               # Operational diagnostics and automation scripts
 │   ├── health-check.sh                    # Automated system, socket, and memory health check
