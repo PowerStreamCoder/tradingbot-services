@@ -43,6 +43,10 @@ WorkingDirectory=/home/i030983/tradingbot-tools
 
 Environment=BOTS_DIR=/home/i030983/tradingbots
 Environment=PYTHONPATH=/home/i030983/tradingbot-tools
+# IB Gateway port for --broker-reconcile. 4002 = paper IB Gateway (current
+# fleet default). For a LIVE fleet change this to 4001 (live IB Gateway) or
+# 7496 (live TWS) to match trading/config.py — do NOT edit the auditor code.
+Environment=AUDITOR_BROKER_PORT=4002
 
 # Audit the previous session, publish proposals to learning_candidates for human
 # review, and page the operator for new critical/high findings. The auditor is
