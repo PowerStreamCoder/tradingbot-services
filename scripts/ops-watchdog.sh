@@ -52,7 +52,7 @@ HYGIENE_DIRS="${HYGIENE_DIRS:-$HOME/tradingbots $HOME/tradingbot-config}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 
 LOCK_MAX_AGE_MIN="${LOCK_MAX_AGE_MIN:-60}"
-SWAP_WARN_MB="${SWAP_WARN_MB:-200}"
+SWAP_WARN_MB="${SWAP_WARN_MB:-600}"
 BACKUP_MAX_GB="${BACKUP_MAX_GB:-5}"
 BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-14}"
 REPEAT_INTERVAL_SECONDS="${REPEAT_INTERVAL_SECONDS:-3600}"
@@ -255,10 +255,11 @@ if command -v free >/dev/null 2>&1; then
     swap_used_mb=$(free -m 2>/dev/null | awk '/^Swap:/ {print $3}')
     swap_used_mb=${swap_used_mb:-0}
     SNAP_SWAP=$swap_used_mb
+    mem_avail_mb=$(free -m 2>/dev/null | awk '/^Mem:/ {print $7}')
     if [ "$swap_used_mb" -gt "$SWAP_WARN_MB" ]; then
         report 1 swap high \
             "Swap usage above ${SWAP_WARN_MB} MB" \
-            "Swap in use is ${swap_used_mb} MB (threshold ${SWAP_WARN_MB} MB). Sustained swap is an early OOM signal on this VM (issue #19). Check top memory consumers: ps -eo pid,rss,cmd --sort=-rss | head."
+            "Swap in use is ${swap_used_mb} MB (threshold ${SWAP_WARN_MB} MB; available RAM: ${mem_avail_mb:-n/a} MB). Sustained swap is an early OOM signal on this VM (issue #19). Check top memory consumers: ps -eo pid,rss,cmd --sort=-rss | head."
     else
         report 0 swap high "Swap usage above ${SWAP_WARN_MB} MB" ""
     fi
