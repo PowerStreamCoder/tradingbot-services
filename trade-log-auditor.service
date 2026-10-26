@@ -63,7 +63,17 @@ Environment=PYTHONPATH=/home/i030983/tradingbot-tools
 # Friday; weekends are skipped), so this Mon-Fri timer never targets a closed day.
 # The resolved ISO date - not the keyword - keys the auditor's memory lifecycle,
 # alerts and report filenames (tradingbot-tools#102).
-ExecStart=/usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts
+#
+# `--failed-spool` is expanded by the shell so every JSONL file in the persistent
+# spool dir is checked. The glob is passed through nullglob, so the arg list is
+# empty (not an error) on days with no spool files.
+ExecStart=/bin/bash -c '\
+  spool_dir=/home/i030983/tradingbots/data/spool; \
+  args=""; \
+  for f in "$spool_dir"/failed_trades_*.jsonl; do \
+    [ -f "$f" ] && args="$args --failed-spool $f"; \
+  done; \
+  exec /usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts $args'
 
 StandardOutput=journal
 StandardError=journal
