@@ -1,0 +1,46 @@
+[Unit]
+Description=Spool Replay Worker (re-submit failed Firestore trade writes)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+After=network-online.target
+Wants=network-online.target
+Requires=network-online.target
+
+# Alert the operator if the replay job itself crashes (i.e. unhandled exception or
+# bad path), distinct from the exit-1 we emit when individual records still fail.
+# Per-record persistent failures are paged by the worker itself via notify_alert.py.
+OnFailure=service-failure-notifier@%n.service
+
+[Service]
+Type=oneshot
+User=i030983
+Group=i030983
+
+# Guard: abort early if the spool_replay module is not deployed yet.
+ExecStartPre=/usr/bin/test -d /home/i030983/tradingbot-tools/spool_replay
+
+WorkingDirectory=/home/i030983/tradingbot-tools
+
+Environment=BOTS_DIR=/home/i030983/tradingbots
+Environment=PYTHONPATH=/home/i030983/tradingbot-tools
+
+# Replay failed spool entries. Exit 1 means one or more records failed this run
+# and have been appended to replay_failures.jsonl; the worker already paged the
+# operator once MAX_RETRIES is reached, so the systemd failure is informational.
+# Exit 0 means all spools were empty or fully replayed.
+ExecStart=/usr/bin/python3 -m spool_replay
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spool-replay
+
+# Bounded: replay touches only the spool dir and Firestore; no heavy computation.
+TimeoutStartSec=120s
+MemoryMax=256M
+CPUQuota=25%
+
+# One-shot driven by the timer. A failure is already surfaced via OnFailure; no
+# automatic retry here so we don't hammer Firestore during an outage.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
