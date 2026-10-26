@@ -174,10 +174,25 @@ if [ -d "$LOCK_SCAN_DIR" ]; then
         fi
         age_min=$(( age / 60 ))
         if [ "$alive" -eq 0 ]; then
+            # If the process is dead and no process holds an exclusive flock on the file,
+            # clean up the abandoned lock file so it does not block future runs.
+            cleaned=0
+            if command -v flock >/dev/null 2>&1; then
+                if flock -n "$lock" true 2>/dev/null; then
+                    rm -f "$lock" 2>/dev/null && cleaned=1
+                    log "cleaned up abandoned stale lock file: $lock (pid ${pid:-none} dead)"
+                fi
+            fi
             stale_lock_count=$(( stale_lock_count + 1 ))
-            report 1 "$key" critical \
-                "Stale lock file: $lock (${age_min}m old, holder dead)" \
-                "Lock '$lock' is ${age_min} minutes old and its PID (${pid:-none}) is not running. A crashed job left it behind; new runs will abort as 'already running' (issue #98). Remediation: rm -f '$lock' and restart the owning unit (e.g. systemctl restart trade-log-auditor)."
+            if [ "$cleaned" -eq 1 ]; then
+                report 1 "$key" critical \
+                    "Stale lock file cleaned: $lock (${age_min}m old, holder dead)" \
+                    "Lock '$lock' was ${age_min} minutes old and its PID (${pid:-none}) is dead. The unheld lock file was automatically cleaned up to prevent blocking future runs."
+            else
+                report 1 "$key" critical \
+                    "Stale lock file: $lock (${age_min}m old, holder dead)" \
+                    "Lock '$lock' is ${age_min} minutes old and its PID (${pid:-none}) is not running. A crashed job left it behind; new runs will abort as 'already running' (issue #98). Remediation: rm -f '$lock' and restart the owning unit (e.g. systemctl restart trade-log-auditor)."
+            fi
         else
             report 0 "$key" critical "Stale lock file: $lock" ""
             log "note: lock $lock is ${age_min}m old but held by live pid $pid (long-running job)"
@@ -192,9 +207,7 @@ SNAP_STALE_LOCKS=$stale_lock_count
 # where it is absent (dev boxes) the check degrades to no alert.
 missed_count=0
 if command -v systemctl >/dev/null 2>&1; then
-    # unit : max hours since last activation before we alert. The auditor and
-    # backup run daily (weekdays for the auditor), so ~26h/50h covers a normal
-    # gap plus a weekend edge without crying wolf.
+    # unit : max hours since last activation before we alert.
     check_timer() {
         local unit="$1" max_hours="$2"
         local ts key
@@ -221,9 +234,19 @@ if command -v systemctl >/dev/null 2>&1; then
             report 0 "$key" high "Scheduled job has not run: $unit" ""
         fi
     }
-    check_timer "trade-log-auditor.timer" "${AUDITOR_MAX_HOURS:-26}"
+    # For weekday-only timers (trade-log-auditor, learning-analysis), Friday afternoon/night
+    # to Monday afternoon/night is ~72h. On Saturday (6), Sunday (7), and Monday (1), add
+    # 52 hours tolerance so normal weekend gaps do not trigger false positive alerts.
+    dow=$(date +%u)
+    weekend_extra=0
+    if [ "$dow" -eq 6 ] || [ "$dow" -eq 7 ] || [ "$dow" -eq 1 ]; then
+        weekend_extra=52
+    fi
+    auditor_limit=$(( ${AUDITOR_MAX_HOURS:-26} + weekend_extra ))
+    learning_limit=$(( ${LEARNING_MAX_HOURS:-50} + weekend_extra ))
+    check_timer "trade-log-auditor.timer" "$auditor_limit"
     check_timer "trading-data-backup.timer" "${BACKUP_MAX_HOURS:-50}"
-    check_timer "learning-analysis.timer" "${LEARNING_MAX_HOURS:-50}"
+    check_timer "learning-analysis.timer" "$learning_limit"
 fi
 SNAP_MISSED_RUNS=$missed_count
 

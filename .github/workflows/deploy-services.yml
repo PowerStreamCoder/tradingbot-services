@@ -98,7 +98,7 @@ jobs:
           # scripts/ counts as deployable: the health check, cron wrapper and
           # systemd failure hook live there and must reach the VM.
           if [ "$DEPLOYED_COMMIT" != "none" ] && git rev-parse "$DEPLOYED_COMMIT" >/dev/null 2>&1; then
-            CHANGED_SERVICES=$(git diff --name-only "$DEPLOYED_COMMIT" "$CURRENT_COMMIT" -- '*.service' '*.timer' 'scripts/*' | wc -l)
+            CHANGED_SERVICES=$(git diff --name-only "$DEPLOYED_COMMIT" "$CURRENT_COMMIT" -- '*.service' '*.timer' 'scripts/*' '.github/workflows/deploy-services.yml' | wc -l)
             if [ "$CHANGED_SERVICES" -eq 0 ]; then
               echo "✅ No .service/.timer/scripts changes since last deploy. Skipping."
               echo "should_deploy=false" >> $GITHUB_OUTPUT
@@ -288,7 +288,8 @@ jobs:
             # Units whose names are not matched by the globs above.
             for unit in notification-service.service trade-log-auditor.service \
                         trade-log-auditor.timer learning-analysis.service \
-                        learning-analysis.timer "service-failure-notifier@.service"; do
+                        learning-analysis.timer ops-watchdog.service \
+                        ops-watchdog.timer "service-failure-notifier@.service"; do
               sudo chown root:root "/etc/systemd/system/$unit" 2>/dev/null || true
               sudo chmod 644 "/etc/systemd/system/$unit" 2>/dev/null || true
             done
@@ -339,6 +340,8 @@ jobs:
               /etc/systemd/system/notification-service.service \
               /etc/systemd/system/trade-log-auditor.service \
               /etc/systemd/system/learning-analysis.service \
+              /etc/systemd/system/ops-watchdog.service \
+              /etc/systemd/system/ops-watchdog.timer \
               "/etc/systemd/system/service-failure-notifier@.service" 2>&1 \
               | grep -v snapd || true)
             if [ -n "$PROBLEMS" ]; then
@@ -355,6 +358,8 @@ jobs:
             echo "Enabling and restarting timers..."
             sudo systemctl enable --now trading-bot-manager-start.timer
             sudo systemctl enable --now trading-bot-manager-stop.timer
+            sudo systemctl enable --now ops-watchdog.timer
+            sudo systemctl enable --now learning-analysis.timer
             # Only enable the auditor timer once its code is actually on the VM.
             # This workflow ships only units; the auditor code arrives via
             # tradingbot-tools' own deploy-tools.yml (23:45 ET nightly). Enabling
@@ -377,6 +382,10 @@ jobs:
             systemctl show trading-bot-manager-start.timer --property=NextElapseUSecRealtime --value
             echo "⏰ Stop timer next fire:"
             systemctl show trading-bot-manager-stop.timer --property=NextElapseUSecRealtime --value
+            echo "⏰ Ops-watchdog timer next fire:"
+            systemctl show ops-watchdog.timer --property=NextElapseUSecRealtime --value || true
+            echo "⏰ Learning analysis timer next fire:"
+            systemctl show learning-analysis.timer --property=NextElapseUSecRealtime --value || true
             echo "⏰ Auditor timer next fire:"
             systemctl show trade-log-auditor.timer --property=NextElapseUSecRealtime --value || true
           EOF
@@ -404,6 +413,10 @@ jobs:
             echo ""
             echo "🌐 Bot Control API:"
             sudo systemctl status bot-control-api.service --no-pager -l || true
+
+            echo ""
+            echo "🛡️ Ops Watchdog Timer:"
+            sudo systemctl status ops-watchdog.timer --no-pager -l || true
 
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
