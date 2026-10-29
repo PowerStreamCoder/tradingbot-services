@@ -1,0 +1,26 @@
+[Unit]
+Description=Schedule Spool Replay Worker (every 15 min, market hours + immediate pre-open)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
+
+[Timer]
+# Run every 15 minutes during and around market hours (08:00–17:00 ET Mon-Fri).
+# The early 08:00 slots catch any overnight Firestore failures before the first
+# trade of the day; the 17:00 slot catches failures from the close-out window.
+# NOTE: systemd cannot range both the hour and the minute in one spec, so the
+# step (/15) lives on the minute while the hour is the range 08..17. Verified
+# with `systemd-analyze calendar`; an earlier "08:30..17:00/15" form was rejected
+# ("Failed to parse calendar specification") and disabled the whole timer.
+OnCalendar=Mon..Fri 08..17:00/15 America/New_York
+
+# Also catch up on any spool files written while the VM was off or the timer
+# was disabled. Persistent=true re-fires the missed runs on next boot.
+Persistent=true
+
+# Small jitter so the replay does not collide with bot heartbeats on the :00/:15
+# minute boundary.
+RandomizedDelaySec=60
+
+Unit=spool-replay.service
+
+[Install]
+WantedBy=timers.target

@@ -43,6 +43,10 @@ WorkingDirectory=/home/i030983/tradingbot-tools
 
 Environment=BOTS_DIR=/home/i030983/tradingbots
 Environment=PYTHONPATH=/home/i030983/tradingbot-tools
+# IB Gateway port for --broker-reconcile. 4002 = paper IB Gateway (current
+# fleet default). For a LIVE fleet change this to 4001 (live IB Gateway) or
+# 7496 (live TWS) to match trading/config.py — do NOT edit the auditor code.
+Environment=AUDITOR_BROKER_PORT=4002
 
 # Audit the previous session, publish proposals to learning_candidates for human
 # review, and page the operator for new critical/high findings. The auditor is
@@ -67,13 +71,17 @@ Environment=PYTHONPATH=/home/i030983/tradingbot-tools
 # `--failed-spool` is expanded by the shell so every JSONL file in the persistent
 # spool dir is checked. The glob is passed through nullglob, so the arg list is
 # empty (not an error) on days with no spool files.
+#
+# `--broker-reconcile` cross-checks Firestore trades against IB Gateway executions.
+# IB Gateway is still running at 16:45 (bots stop at 16:39), so this window is safe.
+# Omit this flag if you want a fully offline audit or IB Gateway is not accessible.
 ExecStart=/bin/bash -c '\
   spool_dir=/home/i030983/tradingbots/data/spool; \
   args=""; \
   for f in "$spool_dir"/failed_trades_*.jsonl; do \
     [ -f "$f" ] && args="$args --failed-spool $f"; \
   done; \
-  exec /usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts $args'
+  exec /usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts --broker-reconcile $args'
 
 StandardOutput=journal
 StandardError=journal
