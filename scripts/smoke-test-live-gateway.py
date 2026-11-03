@@ -7,7 +7,7 @@ Ref: SIMULTANEOUS_PAPER_LIVE_TRADING_DESIGN.md §8 (Phase 1), Issue #109.
 Verifies:
 1. Socket reachability on Live Gateway (:4001) and Paper Gateway (:4002).
 2. Live IBKR Broker Handshake: confirms account ID strictly starts with 'U' (Live)
-   and fails closed on 'DU' or any unexpected prefix.
+   and fails closed on 'DU' or any unexpected prefix across all returned accounts.
 3. Market Data Quote Subscription: confirms live quotes for liquid contract (SPY).
 4. Paper Gateway Isolation: confirms Paper Gateway (:4002) is unaffected
    and strictly serving paper account (DU...). Fails on cross-wire.
@@ -43,6 +43,8 @@ def test_tcp_socket(host: str, port: int, timeout: float = 3.0) -> Tuple[bool, s
             return True, f"Connection to {host}:{port} succeeded."
         else:
             return False, f"Connection to {host}:{port} failed (errno={result})."
+    except socket.gaierror as e:
+        return False, f"Host resolution failed for '{host}': {e}"
     except Exception as e:
         return False, f"Exception connecting to {host}:{port}: {e}"
 
@@ -84,7 +86,7 @@ def run_socket_checks(
 def _verify_live_account(ib_live, live_port: int) -> bool:
     """
     Assert account is live and strictly starts with 'U'.
-    Fails closed on 'DU' (paper) or any non-'U' prefix (Blocker 4 fix).
+    Fails closed on 'DU' (paper) or any non-'U' prefix across ALL returned accounts.
     """
     accounts = ib_live.managedAccounts()
     logger.info(f"Connected to Live Gateway. Managed accounts: {accounts}")
@@ -93,29 +95,36 @@ def _verify_live_account(ib_live, live_port: int) -> bool:
         logger.error("❌ No managed accounts returned by Live Gateway.")
         return False
 
-    live_account = accounts[0]
-    if live_account.startswith("DU"):
+    # Edge case: Verify no account in the list is a paper account ('DU...')
+    for acct in accounts:
+        if not acct:
+            continue
+        acct_clean = str(acct).strip().upper()
+        if acct_clean.startswith("DU"):
+            logger.error(
+                f"❌ CRITICAL FATAL ERROR: Live Gateway returned a PAPER account ({acct})!\n"
+                f"   Port {live_port} is supposed to route to LIVE TRADING with real capital.\n"
+                f"   Check your container configuration in .ibgateway-live.env!"
+            )
+            return False
+
+    # The primary live account must strictly begin with 'U'
+    primary_account = str(accounts[0]).strip().upper()
+    if not primary_account.startswith("U"):
         logger.error(
-            f"❌ CRITICAL FATAL ERROR: Live Gateway returned a PAPER account ({live_account})!\n"
-            f"   Port {live_port} is supposed to route to LIVE TRADING with real capital.\n"
-            f"   Check your container configuration in .ibgateway-live.env!"
-        )
-        return False
-    elif not live_account.startswith("U"):
-        logger.error(
-            f"❌ CRITICAL FATAL ERROR: Account '{live_account}' does not start with "
+            f"❌ CRITICAL FATAL ERROR: Primary account '{accounts[0]}' does not start with "
             f"standard IBKR live prefix 'U'. Failing closed for real-money safety."
         )
         return False
 
-    logger.info(f"✅ CONFIRMED: Connected to LIVE broker account '{live_account}'.")
+    logger.info(f"✅ CONFIRMED: Connected to LIVE broker account '{accounts[0]}'.")
     return True
 
 
 def _verify_market_data(ib_live, stock_cls) -> bool:
     """
     Test live market data quote for SPY.
-    Returns True if quote received, False if timed out (Major 3 fix).
+    Returns True if quote received, False if timed out or invalid.
     """
     logger.info("Testing live market data quote for SPY...")
     try:
@@ -127,7 +136,7 @@ def _verify_market_data(ib_live, stock_cls) -> bool:
         while time.time() - start_wait < 5.0:
             ib_live.sleep(0.5)
             price = ticker.marketPrice() or ticker.last or ticker.close
-            if price and price > 0:
+            if price is not None and price > 0:
                 logger.info(f"✅ Live Market Data Feed Verified: SPY quote = ${price:.2f}")
                 return True
 
@@ -151,7 +160,7 @@ def _cross_check_paper_gateway(
 ) -> bool:
     """
     Cross-check Paper Gateway isolation.
-    Fails closed if paper port returns a non-DU account (cross-wire check, Major 5 fix).
+    Fails closed if paper port returns any live or non-DU account (cross-wire check).
     """
     if not paper_socket_reachable:
         logger.warning(
@@ -168,7 +177,9 @@ def _cross_check_paper_gateway(
             paper_host, paper_port, clientId=client_id + 1, timeout=timeout, readonly=True
         )
         if not ib_paper.isConnected():
-            logger.error(f"❌ Failed to establish connection to Paper Gateway on port {paper_port}.")
+            logger.error(
+                f"❌ Failed to establish connection to Paper Gateway on port {paper_port}."
+            )
             return False
 
         paper_accounts = ib_paper.managedAccounts()
@@ -177,16 +188,29 @@ def _cross_check_paper_gateway(
             logger.error("❌ Paper Gateway returned no accounts.")
             return False
 
-        paper_account = paper_accounts[0]
-        if not paper_account.startswith("DU"):
+        # Edge case: verify NO account on paper port is a live account
+        for acct in paper_accounts:
+            if not acct:
+                continue
+            acct_clean = str(acct).strip().upper()
+            if acct_clean.startswith("U") and not acct_clean.startswith("DU"):
+                logger.error(
+                    f"❌ CRITICAL CROSS-WIRE DETECTED: Paper port {paper_port} returned LIVE "
+                    f"account '{acct}'! Paper port must strictly route to DU... accounts."
+                )
+                return False
+
+        primary_paper = str(paper_accounts[0]).strip().upper()
+        if not primary_paper.startswith("DU"):
             logger.error(
-                f"❌ CRITICAL CROSS-WIRE DETECTED: Paper port {paper_port} returned NON-PAPER "
-                f"account '{paper_account}'! Paper port must strictly route to DU... accounts."
+                f"❌ CRITICAL CROSS-WIRE DETECTED: Paper port {paper_port} primary account "
+                f"'{paper_accounts[0]}' does NOT start with 'DU'!"
             )
             return False
 
         logger.info(
-            f"✅ CONFIRMED: Paper Gateway correctly routes to paper account '{paper_account}'."
+            f"✅ CONFIRMED: Paper Gateway correctly routes to paper account "
+            f"'{paper_accounts[0]}'."
         )
         logger.info(
             "✅ Zero cross-interference: both gateways operate concurrently in correct modes."

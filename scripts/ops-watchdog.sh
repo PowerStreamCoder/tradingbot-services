@@ -99,6 +99,8 @@ is_port_listening() {
         lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
     elif command -v netstat >/dev/null 2>&1; then
         netstat -an 2>/dev/null | grep -qE "[:.]${port}[[:space:]].*LISTEN"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "import socket; s = socket.socket(); s.settimeout(0.5); res = s.connect_ex(('127.0.0.1', $port)); s.close(); exit(0 if res == 0 else 1)" 2>/dev/null
     else
         return 1
     fi

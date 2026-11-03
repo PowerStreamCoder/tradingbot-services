@@ -16,6 +16,7 @@ class TestGatewayConfiguration(unittest.TestCase):
         self.manage_script = os.path.join(self.repo_root, "scripts", "manage-gateways.sh")
         self.health_script = os.path.join(self.repo_root, "scripts", "health-check.sh")
         self.watchdog_script = os.path.join(self.repo_root, "scripts", "ops-watchdog.sh")
+        self.gitignore_file = os.path.join(self.repo_root, ".gitignore")
 
     def test_docker_compose_valid_and_constrained(self):
         """Verify docker-compose.gateways.yml has valid syntax, memory caps, and loopback ports."""
@@ -51,6 +52,19 @@ class TestGatewayConfiguration(unittest.TestCase):
                     f"Port binding '{p}' in service '{svc_name}' must be loopback only (127.0.0.1)"
                 )
 
+    def test_manage_gateways_invalid_command(self):
+        """Edge case: manage-gateways.sh exits with code 1 and usage on invalid command."""
+        res = subprocess.run([self.manage_script, "invalid-cmd"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Usage:", res.stdout + res.stderr)
+
+    def test_manage_gateways_verify_ports(self):
+        """Edge case: manage-gateways.sh verify-ports runs without syntax error."""
+        res = subprocess.run([self.manage_script, "verify-ports"], capture_output=True, text=True)
+        # Exits cleanly and produces output for the 6 ports
+        for p in ["4001", "4002", "4003", "4004", "5900", "5901"]:
+            self.assertIn(f"Port {p}:", res.stdout)
+
     def test_manage_gateways_bash_syntax(self):
         """Verify manage-gateways.sh passes bash syntax check."""
         res = subprocess.run(["bash", "-n", self.manage_script], capture_output=True, text=True)
@@ -65,6 +79,22 @@ class TestGatewayConfiguration(unittest.TestCase):
         """Verify ops-watchdog.sh passes bash syntax check."""
         res = subprocess.run(["bash", "-n", self.watchdog_script], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Syntax error in ops-watchdog.sh: {res.stderr}")
+
+    def test_all_operational_scripts_syntax(self):
+        """Verify all scripts/*.sh pass bash syntax check."""
+        scripts_dir = os.path.join(self.repo_root, "scripts")
+        for fname in os.listdir(scripts_dir):
+            if fname.endswith(".sh"):
+                fpath = os.path.join(scripts_dir, fname)
+                res = subprocess.run(["bash", "-n", fpath], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Syntax error in {fname}: {res.stderr}")
+
+    def test_gitignore_contains_secrets_rules(self):
+        """Verify .gitignore includes gateway secret rules."""
+        with open(self.gitignore_file, "r") as f:
+            content = f.read()
+        self.assertIn("*.ibgateway*.env", content)
+        self.assertIn("*.env", content)
 
 
 if __name__ == "__main__":
