@@ -6,11 +6,11 @@ Ref: SIMULTANEOUS_PAPER_LIVE_TRADING_DESIGN.md §8 (Phase 1), Issue #109.
 
 Verifies:
 1. Socket reachability on Live Gateway (:4001) and Paper Gateway (:4002).
-2. Live IBKR Broker Handshake: confirms account ID starts with 'U' (Live)
-   and NOT 'DU' (Paper).
+2. Live IBKR Broker Handshake: confirms account ID strictly starts with 'U' (Live)
+   and fails closed on 'DU' or any unexpected prefix.
 3. Market Data Quote Subscription: confirms live quotes for liquid contract (SPY).
 4. Paper Gateway Isolation: confirms Paper Gateway (:4002) is unaffected
-   and serving paper account.
+   and strictly serving paper account (DU...). Fails on cross-wire.
 
 Modes:
 - Standard / Broker Mode: Uses ib_insync (runs in venv311).
@@ -53,8 +53,8 @@ def run_socket_checks(
     paper_host: str,
     paper_port: int,
     timeout: float
-) -> bool:
-    """Run non-destructive TCP probes on broker ports."""
+) -> Tuple[bool, bool]:
+    """Run non-destructive TCP probes on broker ports. Returns (live_ok, paper_ok)."""
     logger.info("=" * 70)
     logger.info("STEP 1: TCP Port Probing (Standard Library / Dependency-Free)")
     logger.info("=" * 70)
@@ -71,18 +71,21 @@ def run_socket_checks(
 
     if not ok_live:
         logger.error(f"❌ Live Gateway port {live_port} is not reachable.")
-        return False
+        return False, ok_paper
     if not ok_paper:
         logger.warning(
             f"⚠️ Paper Gateway port {paper_port} is not reachable. (Paper gateway down?)"
         )
 
     logger.info("✅ TCP socket connectivity confirmed.")
-    return True
+    return True, ok_paper
 
 
 def _verify_live_account(ib_live, live_port: int) -> bool:
-    """Assert account is live and strictly not a paper (DU...) account."""
+    """
+    Assert account is live and strictly starts with 'U'.
+    Fails closed on 'DU' (paper) or any non-'U' prefix (Blocker 4 fix).
+    """
     accounts = ib_live.managedAccounts()
     logger.info(f"Connected to Live Gateway. Managed accounts: {accounts}")
 
@@ -99,36 +102,43 @@ def _verify_live_account(ib_live, live_port: int) -> bool:
         )
         return False
     elif not live_account.startswith("U"):
-        logger.warning(
-            f"⚠️ Note: Account '{live_account}' does not start with standard prefix 'U'."
+        logger.error(
+            f"❌ CRITICAL FATAL ERROR: Account '{live_account}' does not start with "
+            f"standard IBKR live prefix 'U'. Failing closed for real-money safety."
         )
-    else:
-        logger.info(f"✅ CONFIRMED: Connected to LIVE broker account '{live_account}'.")
+        return False
+
+    logger.info(f"✅ CONFIRMED: Connected to LIVE broker account '{live_account}'.")
     return True
 
 
-def _verify_market_data(ib_live, stock_cls) -> None:
-    """Test live market data quote for SPY."""
+def _verify_market_data(ib_live, stock_cls) -> bool:
+    """
+    Test live market data quote for SPY.
+    Returns True if quote received, False if timed out (Major 3 fix).
+    """
     logger.info("Testing live market data quote for SPY...")
-    contract = stock_cls("SPY", "SMART", "USD")
-    ib_live.qualifyContracts(contract)
-    ticker = ib_live.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
+    try:
+        contract = stock_cls("SPY", "SMART", "USD")
+        ib_live.qualifyContracts(contract)
+        ticker = ib_live.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
 
-    start_wait = time.time()
-    received_price = False
-    while time.time() - start_wait < 5.0:
-        ib_live.sleep(0.5)
-        price = ticker.marketPrice() or ticker.last or ticker.close
-        if price and price > 0:
-            logger.info(f"✅ Live Market Data Feed Verified: SPY quote = ${price:.2f}")
-            received_price = True
-            break
+        start_wait = time.time()
+        while time.time() - start_wait < 5.0:
+            ib_live.sleep(0.5)
+            price = ticker.marketPrice() or ticker.last or ticker.close
+            if price and price > 0:
+                logger.info(f"✅ Live Market Data Feed Verified: SPY quote = ${price:.2f}")
+                return True
 
-    if not received_price:
-        logger.warning(
-            "⚠️ Could not obtain real-time SPY quote within 5 seconds. "
+        logger.error(
+            "❌ Could not obtain real-time SPY quote within 5.0 seconds. "
             "Verify IBKR live market data subscriptions for US Equities."
         )
+        return False
+    except Exception as e:
+        logger.error(f"❌ Error requesting market data: {e}")
+        return False
 
 
 def _cross_check_paper_gateway(
@@ -136,9 +146,20 @@ def _cross_check_paper_gateway(
     paper_port: int,
     client_id: int,
     timeout: float,
-    ib_cls
-) -> None:
-    """Cross-check Paper Gateway isolation."""
+    ib_cls,
+    paper_socket_reachable: bool = True
+) -> bool:
+    """
+    Cross-check Paper Gateway isolation.
+    Fails closed if paper port returns a non-DU account (cross-wire check, Major 5 fix).
+    """
+    if not paper_socket_reachable:
+        logger.warning(
+            f"⚠️ Paper Gateway port {paper_port} was not reachable during socket check; "
+            f"skipping paper isolation cross-check."
+        )
+        return True
+
     logger.info("-" * 70)
     logger.info(f"Cross-checking Paper Gateway isolation on port {paper_port}...")
     ib_paper = ib_cls()
@@ -146,20 +167,37 @@ def _cross_check_paper_gateway(
         ib_paper.connect(
             paper_host, paper_port, clientId=client_id + 1, timeout=timeout, readonly=True
         )
-        if ib_paper.isConnected():
-            paper_accounts = ib_paper.managedAccounts()
-            logger.info(f"Paper Gateway active. Accounts: {paper_accounts}")
-            if paper_accounts and paper_accounts[0].startswith("DU"):
-                logger.info(
-                    f"✅ CONFIRMED: Paper Gateway correctly routes to paper account "
-                    f"'{paper_accounts[0]}'."
-                )
-            ib_paper.disconnect()
-            logger.info(
-                "✅ Zero cross-interference: both gateways operate concurrently in correct modes."
+        if not ib_paper.isConnected():
+            logger.error(f"❌ Failed to establish connection to Paper Gateway on port {paper_port}.")
+            return False
+
+        paper_accounts = ib_paper.managedAccounts()
+        logger.info(f"Paper Gateway active. Accounts: {paper_accounts}")
+        if not paper_accounts:
+            logger.error("❌ Paper Gateway returned no accounts.")
+            return False
+
+        paper_account = paper_accounts[0]
+        if not paper_account.startswith("DU"):
+            logger.error(
+                f"❌ CRITICAL CROSS-WIRE DETECTED: Paper port {paper_port} returned NON-PAPER "
+                f"account '{paper_account}'! Paper port must strictly route to DU... accounts."
             )
+            return False
+
+        logger.info(
+            f"✅ CONFIRMED: Paper Gateway correctly routes to paper account '{paper_account}'."
+        )
+        logger.info(
+            "✅ Zero cross-interference: both gateways operate concurrently in correct modes."
+        )
+        return True
     except Exception as e:
-        logger.warning(f"Note: Paper Gateway connection check skipped or failed: {e}")
+        logger.error(f"❌ Error during Paper Gateway isolation cross-check: {e}")
+        return False
+    finally:
+        if ib_paper.isConnected():
+            ib_paper.disconnect()
 
 
 def run_broker_handshake(
@@ -169,7 +207,8 @@ def run_broker_handshake(
     paper_port: int,
     client_id: int,
     skip_market_data: bool = False,
-    timeout: float = 10.0
+    timeout: float = 10.0,
+    paper_socket_reachable: bool = True
 ) -> bool:
     """Run full read-only broker handshake via ib_insync."""
     logger.info("=" * 70)
@@ -207,7 +246,11 @@ def run_broker_handshake(
             return False
 
         if not skip_market_data:
-            _verify_market_data(ib_live, Stock)
+            if not _verify_market_data(ib_live, Stock):
+                logger.error("❌ Live market data subscription verification failed.")
+                return False
+        else:
+            logger.warning("⚠️ Market data check skipped via --skip-market-data.")
 
     except Exception as e:
         logger.error(f"❌ Exception during Live Broker Handshake: {e}")
@@ -217,10 +260,29 @@ def run_broker_handshake(
             ib_live.disconnect()
             logger.info("Disconnected read-only client from Live Gateway.")
 
-    _cross_check_paper_gateway(paper_host, paper_port, client_id, timeout, IB)
+    # Cross-check Paper Gateway isolation
+    paper_ok = _cross_check_paper_gateway(
+        paper_host=paper_host,
+        paper_port=paper_port,
+        client_id=client_id,
+        timeout=timeout,
+        ib_cls=IB,
+        paper_socket_reachable=paper_socket_reachable
+    )
+    if not paper_ok:
+        logger.error("❌ Paper Gateway isolation cross-check failed.")
+        return False
 
     logger.info("=" * 70)
-    logger.info("🎉 MANDATORY GATE PASSED: Live Gateway is operational and verified.")
+    if skip_market_data:
+        logger.info(
+            "⚠️ GATE CONDITIONALLY PASSED: Live connection & isolation verified "
+            "(market data NOT verified due to --skip-market-data)."
+        )
+    else:
+        logger.info(
+            "🎉 MANDATORY GATE PASSED: Live Gateway is fully operational and verified."
+        )
     logger.info("=" * 70)
     return True
 
@@ -255,7 +317,7 @@ def main():
     args = parser.parse_args()
 
     # Step 1: TCP Socket Probe (Always run, dependency-free)
-    socket_ok = run_socket_checks(
+    live_socket_ok, paper_socket_ok = run_socket_checks(
         live_host=args.host,
         live_port=args.port,
         paper_host=args.host,
@@ -263,7 +325,7 @@ def main():
         timeout=min(args.timeout, 3.0)
     )
 
-    if not socket_ok:
+    if not live_socket_ok:
         sys.exit(1)
 
     if args.socket_only:
@@ -278,7 +340,8 @@ def main():
         paper_port=args.paper_port,
         client_id=args.client_id,
         skip_market_data=args.skip_market_data,
-        timeout=args.timeout
+        timeout=args.timeout,
+        paper_socket_reachable=paper_socket_ok
     )
 
     sys.exit(0 if broker_ok else 1)

@@ -19,6 +19,14 @@ Thumbs.db
 *.bak
 *.backup
 
+# Secrets and environment files
+*.env
+*.env.*
+.env
+.env.*
+*.ibgateway*.env
+.ibgateway*.env
+
 # Python cache & test artifacts
 __pycache__/
 *.py[cod]

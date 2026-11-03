@@ -56,6 +56,9 @@ SWAP_WARN_MB="${SWAP_WARN_MB:-600}"
 BACKUP_MAX_GB="${BACKUP_MAX_GB:-5}"
 BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-14}"
 REPEAT_INTERVAL_SECONDS="${REPEAT_INTERVAL_SECONDS:-3600}"
+IB_PAPER_PORT="${IB_PAPER_PORT:-4002}"
+IB_LIVE_PORT="${IB_LIVE_PORT:-4001}"
+CHECK_LIVE_GATEWAY="${CHECK_LIVE_GATEWAY:-auto}"
 
 DRY_RUN_FLAG=""
 if [ "${OPS_WATCHDOG_DRY_RUN:-0}" = "1" ]; then
@@ -85,6 +88,20 @@ log() {
 file_mtime() {
     local path="$1"
     stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null
+}
+
+# Check if a TCP port is listening locally (portable across Linux ss and macOS/BSD lsof/netstat)
+is_port_listening() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -an 2>/dev/null | grep -qE "[:.]${port}[[:space:]].*LISTEN"
+    else
+        return 1
+    fi
 }
 
 # email_alert <priority> <dedup-key> <title> <message> [min-interval]
@@ -262,6 +279,62 @@ if command -v free >/dev/null 2>&1; then
             "Swap in use is ${swap_used_mb} MB (threshold ${SWAP_WARN_MB} MB; available RAM: ${mem_avail_mb:-n/a} MB). Sustained swap is an early OOM signal on this VM (issue #19). Check top memory consumers: ps -eo pid,rss,cmd --sort=-rss | head."
     else
         report 0 swap high "Swap usage above ${SWAP_WARN_MB} MB" ""
+    fi
+fi
+
+# 3b. Dual Broker Gateways & Ports (Phase 1 watchdog monitoring) ---------------
+# Watches gateway containers and API ports to correlate with swap/memory pressure
+# and detect silent container crashes (Issue #109).
+if command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1; then
+    # Paper gateway container & port
+    gw_paper_ok=1
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qE "^(ib-gateway|ib-gateway-paper)$" && gw_paper_ok=0
+    if [ "$gw_paper_ok" -eq 0 ]; then
+        report 0 "ib-gateway-container" critical "IB Gateway container (Paper) is not running" ""
+        port_paper_ok=1
+        is_port_listening "${IB_PAPER_PORT}" && port_paper_ok=0
+        if [ "$port_paper_ok" -eq 0 ]; then
+            report 0 "ib-gateway-port" critical "IB Gateway API port ${IB_PAPER_PORT} (Paper) is not listening" ""
+        else
+            report 1 "ib-gateway-port" critical \
+                "IB Gateway API port ${IB_PAPER_PORT} (Paper) is not listening" \
+                "The paper gateway container is running but port ${IB_PAPER_PORT} is not listening."
+        fi
+    else
+        report 1 "ib-gateway-container" critical \
+            "IB Gateway container (Paper) is not running" \
+            "The 'ib-gateway' container is absent from 'docker ps'. Paper bots cannot reach the broker."
+    fi
+
+    # Live gateway container & port (auto-detected or enabled via CHECK_LIVE_GATEWAY=1)
+    should_check_live_gw=0
+    if [ "$CHECK_LIVE_GATEWAY" = "1" ]; then
+        should_check_live_gw=1
+    elif [ "$CHECK_LIVE_GATEWAY" = "auto" ]; then
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live"; then
+            should_check_live_gw=1
+        fi
+    fi
+
+    if [ "$should_check_live_gw" -eq 1 ]; then
+        gw_live_ok=1
+        docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live" && gw_live_ok=0
+        if [ "$gw_live_ok" -eq 0 ]; then
+            report 0 "ib-gateway-live-container" critical "IB Gateway Live container is not running" ""
+            port_live_ok=1
+            is_port_listening "${IB_LIVE_PORT}" && port_live_ok=0
+            if [ "$port_live_ok" -eq 0 ]; then
+                report 0 "ib-gateway-live-port" critical "IB Gateway Live API port ${IB_LIVE_PORT} is not listening" ""
+            else
+                report 1 "ib-gateway-live-port" critical \
+                    "IB Gateway Live API port ${IB_LIVE_PORT} is not listening" \
+                    "The live gateway container is running but port ${IB_LIVE_PORT} is not listening."
+            fi
+        else
+            report 1 "ib-gateway-live-container" critical \
+                "IB Gateway Live container is not running" \
+                "The 'ib-gateway-live' container is absent from 'docker ps'. Live bots cannot reach the broker."
+        fi
     fi
 fi
 
