@@ -18,3 +18,12 @@ Thumbs.db
 # Backup files
 *.bak
 *.backup
+
+# Python cache & test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
