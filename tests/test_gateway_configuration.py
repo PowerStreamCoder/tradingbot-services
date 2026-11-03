@@ -96,6 +96,31 @@ class TestGatewayConfiguration(unittest.TestCase):
         self.assertIn("*.ibgateway*.env", content)
         self.assertIn("*.env", content)
 
+    def test_trade_log_auditor_service_dual_gateway_env(self):
+        """Verify trade-log-auditor.service configures dual gateway ports, client IDs, and auto probe."""
+        service_file = os.path.join(self.repo_root, "trade-log-auditor.service")
+        self.assertTrue(os.path.exists(service_file), "trade-log-auditor.service must exist")
+
+        with open(service_file, "r") as f:
+            content = f.read()
+
+        # Phase 4 Mandatory 3 expectations
+        self.assertIn("Environment=AUDITOR_BROKER_PORT=4002", content)
+        self.assertIn("Environment=AUDITOR_BROKER_PORT_PAPER=4002", content)
+        self.assertIn("Environment=AUDITOR_CLIENT_ID_PAPER=20", content)
+        self.assertIn("Environment=AUDITOR_BROKER_PORT_LIVE=4001", content)
+        self.assertIn("Environment=AUDITOR_CLIENT_ID_LIVE=21", content)
+        self.assertIn("Environment=CHECK_LIVE_GATEWAY=auto", content)
+
+        # Verification of no client ID collision with bots (3-8) or flatness gate (22)
+        bot_ids = {"3", "4", "5", "6", "7", "8"}
+        flatness_id = "22"
+        self.assertNotIn("AUDITOR_CLIENT_ID_PAPER=" + flatness_id, content)
+        self.assertNotIn("AUDITOR_CLIENT_ID_LIVE=" + flatness_id, content)
+        for bid in bot_ids:
+            self.assertNotIn("AUDITOR_CLIENT_ID_PAPER=" + bid, content)
+            self.assertNotIn("AUDITOR_CLIENT_ID_LIVE=" + bid, content)
+
 
 if __name__ == "__main__":
     unittest.main()
