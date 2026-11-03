@@ -43,10 +43,16 @@ WorkingDirectory=/home/i030983/tradingbot-tools
 
 Environment=BOTS_DIR=/home/i030983/tradingbots
 Environment=PYTHONPATH=/home/i030983/tradingbot-tools
-# IB Gateway port for --broker-reconcile. 4002 = paper IB Gateway (current
-# fleet default). For a LIVE fleet change this to 4001 (live IB Gateway) or
-# 7496 (live TWS) to match trading/config.py — do NOT edit the auditor code.
+# IB Gateway ports and client IDs for --broker-reconcile.
+# Paper = 4002 (Client ID 20); Live = 4001 (Client ID 21).
+# Bots use Client IDs 3-8; Flatness Gate uses Client ID 22.
+# CHECK_LIVE_GATEWAY=auto probes port 4001 and conditionally queries live executions.
 Environment=AUDITOR_BROKER_PORT=4002
+Environment=AUDITOR_BROKER_PORT_PAPER=4002
+Environment=AUDITOR_CLIENT_ID_PAPER=20
+Environment=AUDITOR_BROKER_PORT_LIVE=4001
+Environment=AUDITOR_CLIENT_ID_LIVE=21
+Environment=CHECK_LIVE_GATEWAY=auto
 
 # Audit the previous session, publish proposals to learning_candidates for human
 # review, and page the operator for new critical/high findings. The auditor is
