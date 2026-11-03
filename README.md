@@ -8,6 +8,7 @@ Systemd service definitions, market timer configurations, failure alerting units
 
 This repository manages the OS-level orchestration of trading bots running on the GCP Compute Engine VM:
 - **Fleet Supervision**: `trading-bot-manager.service` runs the bot manager daemon (source maintained in `tradingbot-bots/services/bot_manager.py`) as unprivileged user `i030983`, supervising child bot processes for all enabled symbols in `bots.json`.
+- **Dual Interactive Brokers Gateways**: Enables simultaneous paper and live multi-bot trading via two isolated Docker containers (`ib-gateway` on port 4002, `ib-gateway-live` on port 4001) governed by strict 512 MB memory/swap caps and `JAVA_HEAP_SIZE=384` JVM limits to protect the 4 GB VM from OOM/swap saturation.
 - **Market Schedule Timers**: Systemd timers automatically start bot processes prior to market open (8:51 AM ET) and execute graceful shutdown procedures after market close (4:39 PM ET).
 - **Graceful Shutdown (`stop_bots.sh`)**: Sends orderly SIGTERM signals, providing bots a 25-second window to persist open bucket states and flush logs before hard termination.
 - **Bot Control API Unit (`bot-control-api.service`)**: Runs the authenticated REST command server (`:8080`) enabling remote actions from the Cloud Run Dashboard. Configured with dedicated `WorkingDirectory`, `PYTHONPATH`, and drop-in `override.conf` for `BOT_CONTROL_API_KEY`.
@@ -15,8 +16,8 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **Nightly Learning Analysis Unit (`learning-analysis.service` / `.timer`)**: Runs post-market learning analysis at 11:00 PM ET.
 - **24/7 Notification Watchdog (`notification-service.service`)**: Standalone watchdog monitoring Firestore for hung bots, daily loss thresholds, and option assignment risks.
 - **Automated Failure Alerting (`service-failure-notifier@.service`)**: Systemd failure hook that alerts operators immediately via email whenever any monitored service, timer, or cron job fails (#25).
-- **Operational Watchdog (`ops-watchdog.service` / `.timer`)**: Runs `scripts/ops-watchdog.sh` every 15 minutes to catch the *silent* failure modes a VM audit surfaced (#310): stale lock files (#98), missed scheduled runs, swap saturation, data/config ownership drift (#297), and filesystem-hygiene drift. Alerts flow through the same `notify_alert.py` pipeline, and a compact health snapshot is published to Firestore (`system_health/current`) for the daily digest.
-- **Operational Health & Backup Scripts**: Automated VM diagnostics (`scripts/health-check.sh`) and database backup retention (`scripts/backup-trading-data.sh`).
+- **Operational Watchdog (`ops-watchdog.service` / `.timer`)**: Runs `scripts/ops-watchdog.sh` every 15 minutes to catch the *silent* failure modes a VM audit surfaced (#310): stale lock files (#98), missed scheduled runs, swap saturation, gateway container crashes, data/config ownership drift (#297), and filesystem-hygiene drift. Alerts flow through the same `notify_alert.py` pipeline, and a compact health snapshot is published to Firestore (`system_health/current`) for the daily digest.
+- **Operational Health & Backup Scripts**: Automated VM diagnostics (`scripts/health-check.sh`) with auto-detecting dual-gateway checks, and database backup retention (`scripts/backup-trading-data.sh`).
 
 ---
 
@@ -24,6 +25,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 
 ```
 tradingbot-services/
+├── docker-compose.gateways.yml            # Compose configuration for isolated paper & live gateways
 ├── trading-bot-manager.service            # Main systemd service supervising bot fleet
 ├── trading-bot-manager-start.timer        # Timer auto-starting bots at 8:51 AM ET Mon-Fri
 ├── trading-bot-manager-stop.timer         # Timer auto-stopping bots at 4:39 PM ET Mon-Fri
@@ -40,16 +42,74 @@ tradingbot-services/
 ├── tradingbots.logrotate                  # Standard daily logrotate policy (14-day retention, compress, copytruncate)
 ├── stop_bots.sh                           # Orderly shutdown and state preservation script
 ├── scripts/                               # Operational diagnostics and automation scripts
-│   ├── health-check.sh                    # Automated system, socket, and memory health check
-│   ├── ops-watchdog.sh                    # Stale-lock / missed-run / swap / ownership / hygiene watchdog (#310)
+│   ├── health-check.sh                    # Automated system, socket, memory, and dual-gateway check
+│   ├── ops-watchdog.sh                    # Stale-lock / missed-run / swap / gateway / ownership watchdog (#310)
+│   ├── manage-gateways.sh                 # Dual IB Gateway lifecycle manager (caps, start/stop, verify)
+│   ├── smoke-test-live-gateway.py         # Mandatory zero-size live broker verification gate
 │   ├── backup-trading-data.sh             # Operational backup script for trading data
 │   ├── systemd-failure-notify.sh          # Dispatches alerts when systemd units fail
 │   ├── cron-run.sh                        # Wrapper for cron job execution with error capture
 │   └── setup-git-hooks.sh                 # Pre-push hook preventing direct push to main
+├── tests/                                 # Automated test suite
+│   ├── test_gateway_configuration.py      # Validates Compose YAML, memory limits, and script syntax
+│   └── test_smoke_test_gateway.py         # Validates TCP socket checks, live/paper accounts, and quotes
 └── .github/workflows/
-    ├── deploy-services.yml                # Protected manual deployment workflow (with FIFO backups)
-    └── pr-checks.yml                      # Syntax validation workflow
+    ├── deploy-services.yml                # Protected deployment workflow (with FIFO backups)
+    └── pr-checks.yml                      # Syntax, lint, unit tests, Bandit, and secret scan
 ```
+
+---
+
+## 🚪 Dual Interactive Brokers Gateways (Paper & Live)
+
+To allow bots to run concurrently in paper mode and live mode, the VM hosts two isolated IB Gateway containers:
+
+| Container | Mode | API Port | Socat Port | VNC Port | Secrets File | Memory Limit | JVM Heap |
+|---|---|---|---|---|---|---|---|
+| `ib-gateway` | Paper | `127.0.0.1:4002` | `127.0.0.1:4004` | `127.0.0.1:5900` | `/home/i030983/.ibgateway.env` | `512m` (`swap: 512m`) | `JAVA_HEAP_SIZE=384` |
+| `ib-gateway-live` | Live | `127.0.0.1:4001` | `127.0.0.1:4003` | `127.0.0.1:5901` | `/home/i030983/.ibgateway-live.env` | `512m` (`swap: 512m`) | `JAVA_HEAP_SIZE=384` |
+
+> [!IMPORTANT]
+> **Strict Memory Governance**: The `gnzsnz/ib-gateway` image defaults to a 768 MB JVM heap if unconfigured. To prevent host OOM on the 4 GB VM, containers are strictly constrained with `--memory=512m --memory-swap=512m` and `JAVA_HEAP_SIZE=384`. Combined gateway footprint is capped at ~850 MB, reserving >3 GB for bot processes.
+
+### Gateway Management CLI (`manage-gateways.sh`)
+
+Manage gateway containers safely via the unified script:
+
+```bash
+# Check status of containers, memory usage, and port security
+./scripts/manage-gateways.sh status
+
+# Verify that all gateway ports are strictly loopback-bound (127.0.0.1)
+./scripts/manage-gateways.sh verify-ports
+
+# Step 1: Cap existing Paper Gateway (Controlled recreation outside RTH)
+./scripts/manage-gateways.sh cap-paper
+
+# Step 2: Provision and start Live Gateway
+./scripts/manage-gateways.sh start-live
+
+# Stop Live Gateway
+./scripts/manage-gateways.sh stop-live
+```
+
+### Mandatory Live Smoke Test Gate (`smoke-test-live-gateway.py`)
+
+Before routing live traffic, execute the mandatory verification script:
+
+```bash
+# Full broker verification (uses ib_insync in venv311)
+/home/i030983/venv311/bin/python3 scripts/smoke-test-live-gateway.py
+
+# Dependency-free socket probing only (standard library, zero packages)
+python3 scripts/smoke-test-live-gateway.py --socket-only
+```
+
+The smoke test asserts:
+1. Port reachability on `:4001` (Live) and `:4002` (Paper).
+2. Connected account strictly begins with `U...` (fails closed on `DU...` or any unexpected prefix).
+3. Real-time market data quote for SPY resolves within 5 seconds.
+4. Paper Gateway isolation cross-check: verifies `:4002` strictly routes to `DU...` and detects any dangerous cross-wiring.
 
 ---
 
@@ -103,8 +163,11 @@ curl -H "X-API-Key: $BOT_CONTROL_API_KEY" http://localhost:8080/health
 
 ### 5. Running Health Checks & Backups
 ```bash
-# Run system and network health check
+# Run system, socket, and dual-gateway health check
 bash scripts/health-check.sh
+
+# Run operational watchdog diagnostics
+bash scripts/ops-watchdog.sh
 
 # Run manual trading data backup
 bash scripts/backup-trading-data.sh
@@ -114,14 +177,16 @@ bash scripts/backup-trading-data.sh
 
 ## 🖥️ Remote GUI Access via VNC
 
-VNC port `5900` is blocked from public internet ingress for security. Access to the IB Gateway GUI requires authenticated SSH port forwarding:
+VNC ports `5900` (Paper) and `5901` (Live) are blocked from public internet ingress. GUI access for manual 2FA or account verification requires authenticated SSH port forwarding:
 
 ```bash
-# Establish secure SSH tunnel to the VM
-gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5900:localhost:5900
+# Paper Gateway VNC (port 5900)
+gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5900:127.0.0.1:5900
 
-# Open your VNC client and connect to:
-# localhost:5900 (Password managed in secure VM vault)
+# Live Gateway VNC (port 5901)
+gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5901:127.0.0.1:5901
+
+# Connect your VNC viewer to localhost:5900 or localhost:5901
 ```
 
 ---
@@ -129,8 +194,8 @@ gcloud compute ssh trading-bot-vm --zone=us-central1-a -- -L 5900:localhost:5900
 ## 🚢 Service Deployment & Backups
 
 Because service definitions require elevated `sudo` privileges and systemd daemon reloads on the VM, deployment is handled with strict controls:
-1. **Protected GitHub Action**: Triggered via `workflow_dispatch` with an explicit `confirm: "deploy"` verification parameter.
-2. **Automated VM Steps**: Copies `.service` and `.timer` files to `/etc/systemd/system/`, runs `systemctl daemon-reload`, and validates service active state.
+1. **Protected GitHub Action**: Triggered via `workflow_dispatch` with an explicit `confirm: "deploy"` verification parameter, or scheduled daily sync at 03:55 UTC Mon-Fri.
+2. **Automated VM Steps**: Copies `.service` and `.timer` files to `/etc/systemd/system/`, syncs `scripts/` to `~/scripts/`, runs `systemctl daemon-reload`, and validates service active state.
 3. **Automated Rollback Backups**: VM backups stored in `~/backups/services` with max 3 FIFO retention.
 
 ---
@@ -138,6 +203,6 @@ Because service definitions require elevated `sudo` privileges and systemd daemo
 ## 🔗 Related Ecosystem Repositories
 
 - [tradingbot-bots](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-bots/README.md): Bot application code and `bot_manager.py` runtime source.
-- [tradingbot-config](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-config/README.md): Registry (`bots.json`) defining enabled symbols.
-- [tradingbot-dashboard](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-dashboard/README.md): Communicates with `bot-control-api.service`.
-- [tradingbot-documentation](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-documentation/README.md): VM layout, operations runbooks, and disaster recovery.
+- [tradingbot-config](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-config/README.md): Registry (`bots.json`) defining enabled symbols and trading profiles.
+- [tradingbot-dashboard](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-dashboard/README.md): Cloud Run dashboard and operator mode controls.
+- [tradingbot-documentation](file:///Users/i030983/Library/CloudStorage/GoogleDrive-sudhirmakam@gmail.com/My%20Drive/TradingBots/tradingbot-documentation/README.md): Architectural design documents, operational runbooks, and disaster recovery.
