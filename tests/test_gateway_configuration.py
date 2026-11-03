@@ -15,9 +15,10 @@ class TestGatewayConfiguration(unittest.TestCase):
         self.compose_file = os.path.join(self.repo_root, "docker-compose.gateways.yml")
         self.manage_script = os.path.join(self.repo_root, "scripts", "manage-gateways.sh")
         self.health_script = os.path.join(self.repo_root, "scripts", "health-check.sh")
+        self.watchdog_script = os.path.join(self.repo_root, "scripts", "ops-watchdog.sh")
 
     def test_docker_compose_valid_and_constrained(self):
-        """Verify docker-compose.gateways.yml has valid syntax and strictly loopback-bound ports."""
+        """Verify docker-compose.gateways.yml has valid syntax, memory caps, and loopback ports."""
         self.assertTrue(os.path.exists(self.compose_file), "docker-compose.gateways.yml must exist")
 
         with open(self.compose_file, "r") as f:
@@ -31,14 +32,16 @@ class TestGatewayConfiguration(unittest.TestCase):
 
         for svc_name in ["ib-gateway-paper", "ib-gateway-live"]:
             svc = services[svc_name]
-            # Verify memory limit
+            # Verify memory and swap limits
             self.assertEqual(svc.get("mem_limit"), "512m")
-            deploy_limits = svc.get("deploy", {}).get("resources", {}).get("limits", {})
-            self.assertEqual(deploy_limits.get("memory"), "512m")
+            self.assertEqual(svc.get("memswap_limit"), "512m")
 
-            # Verify JVM heap limit
+            # Verify JVM heap ceiling via JAVA_HEAP_SIZE (numeric MB, Blocker 1 fix)
             env = svc.get("environment", [])
-            self.assertIn("JAVA_OPTS=-Xmx384m", env)
+            self.assertIn(
+                "JAVA_HEAP_SIZE=384", env,
+                f"Service '{svc_name}' must configure JAVA_HEAP_SIZE=384 for gnzsnz/ib-gateway"
+            )
 
             # Verify loopback-only port bindings
             ports = svc.get("ports", [])
@@ -57,6 +60,11 @@ class TestGatewayConfiguration(unittest.TestCase):
         """Verify health-check.sh passes bash syntax check."""
         res = subprocess.run(["bash", "-n", self.health_script], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Syntax error in health-check.sh: {res.stderr}")
+
+    def test_ops_watchdog_bash_syntax(self):
+        """Verify ops-watchdog.sh passes bash syntax check."""
+        res = subprocess.run(["bash", "-n", self.watchdog_script], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Syntax error in ops-watchdog.sh: {res.stderr}")
 
 
 if __name__ == "__main__":
