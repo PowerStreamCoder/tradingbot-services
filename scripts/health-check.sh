@@ -43,6 +43,9 @@ mkdir -p "$STATE_DIR"
 PYTHON_BIN="${PYTHON_BIN:-/home/i030983/venv311/bin/python3}"
 NOTIFY_CLI="${NOTIFY_CLI:-/home/i030983/tradingbots/services/notify_alert.py}"
 IB_PORT="${IB_PORT:-4002}"
+IB_PAPER_PORT="${IB_PAPER_PORT:-$IB_PORT}"
+IB_LIVE_PORT="${IB_LIVE_PORT:-4001}"
+CHECK_LIVE_GATEWAY="${CHECK_LIVE_GATEWAY:-auto}"
 DISK_THRESHOLD_PCT="${DISK_THRESHOLD_PCT:-80}"
 MEM_AVAIL_FLOOR_PCT="${MEM_AVAIL_FLOOR_PCT:-10}"
 REPEAT_INTERVAL_SECONDS="${REPEAT_INTERVAL_SECONDS:-3600}"
@@ -106,6 +109,20 @@ report() {
     email_alert "$priority" "vm-health:$key" "$title" "$message"
 }
 
+# Check if a TCP port is listening locally (portable across Linux ss and macOS/BSD lsof/netstat)
+is_port_listening() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -an 2>/dev/null | grep -qE "[:.]${port}[[:space:]].*LISTEN"
+    else
+        return 1
+    fi
+}
+
 log "health check start"
 
 # 1. Docker daemon ------------------------------------------------------------
@@ -119,23 +136,50 @@ if [ "$docker_ok" -ne 0 ]; then
     exit 0
 fi
 
-# 2. IB Gateway container -----------------------------------------------------
+# 2. IB Gateway container (Paper) ---------------------------------------------
 gw_ok=1
-docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway" && gw_ok=0
+docker ps --format '{{.Names}}' 2>/dev/null | grep -qE "^(ib-gateway|ib-gateway-paper)$" && gw_ok=0
 report "$gw_ok" ib-gateway critical \
-    "IB Gateway container is not running" \
-    "The 'ib-gateway' container is absent from 'docker ps'. The bots cannot reach the broker."
+    "IB Gateway container (Paper) is not running" \
+    "The 'ib-gateway' container is absent from 'docker ps'. Paper bots cannot reach the broker."
 if [ "$gw_ok" -ne 0 ]; then
     log "health check done: alerts=$ALERTS (ib-gateway down; port check skipped)"
     exit 0
 fi
 
-# 3. IB Gateway API port ------------------------------------------------------
+# 3. IB Gateway API port (Paper) ----------------------------------------------
 port_ok=1
-ss -tln 2>/dev/null | grep -qE "[:.]${IB_PORT}[[:space:]]" && port_ok=0
+is_port_listening "${IB_PAPER_PORT}" && port_ok=0
 report "$port_ok" ib-gateway-port critical \
-    "IB Gateway API port ${IB_PORT} is not listening" \
-    "Nothing is listening on tcp/${IB_PORT}: the container is up but not serving the API. Bots will fail to connect."
+    "IB Gateway API port ${IB_PAPER_PORT} (Paper) is not listening" \
+    "Nothing is listening on tcp/${IB_PAPER_PORT}: the paper container is up but not serving the API. Bots will fail to connect."
+
+# 3b. IB Gateway Live container & port (Dual Gateway Mode) --------------------
+should_check_live=0
+if [ "$CHECK_LIVE_GATEWAY" = "1" ]; then
+    should_check_live=1
+elif [ "$CHECK_LIVE_GATEWAY" = "auto" ]; then
+    # Auto-detect: if the live container has been provisioned on the VM
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live"; then
+        should_check_live=1
+    fi
+fi
+
+if [ "$should_check_live" -eq 1 ]; then
+    gw_live_ok=1
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live" && gw_live_ok=0
+    report "$gw_live_ok" ib-gateway-live critical \
+        "IB Gateway Live container is not running" \
+        "The 'ib-gateway-live' container is absent from 'docker ps'. Live bots cannot reach the broker."
+
+    if [ "$gw_live_ok" -eq 0 ]; then
+        port_live_ok=1
+        is_port_listening "${IB_LIVE_PORT}" && port_live_ok=0
+        report "$port_live_ok" ib-gateway-live-port critical \
+            "IB Gateway Live API port ${IB_LIVE_PORT} is not listening" \
+            "Nothing is listening on tcp/${IB_LIVE_PORT}: the live gateway is up but not serving the API."
+    fi
+fi
 
 # 4. Core background services -------------------------------------------------
 if systemctl is-active --quiet bot-control-api.service; then

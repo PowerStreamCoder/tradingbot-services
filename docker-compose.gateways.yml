@@ -1,0 +1,46 @@
+# Docker Compose configuration for Dual Interactive Brokers Gateways (Phase 1)
+# Ref: SIMULTANEOUS_PAPER_LIVE_TRADING_DESIGN.md §2.1, §2.2
+# Host memory limit: 512 MB per container (-Xmx384m JVM heap) to protect 4 GB VM.
+
+version: '3.8'
+
+services:
+  ib-gateway-paper:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ib-gateway
+    restart: unless-stopped
+    mem_limit: 512m
+    env_file:
+      - /home/i030983/.ibgateway.env
+    environment:
+      - TRADING_MODE=paper
+      - TWS_PORT=4002
+      - JAVA_OPTS=-Xmx384m
+    ports:
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:4004:4004"
+      - "127.0.0.1:5900:5900"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  ib-gateway-live:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    container_name: ib-gateway-live
+    restart: unless-stopped
+    mem_limit: 512m
+    env_file:
+      - /home/i030983/.ibgateway-live.env
+    environment:
+      - TRADING_MODE=live
+      - TWS_PORT=4001
+      - JAVA_OPTS=-Xmx384m
+    ports:
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4003:4003"
+      - "127.0.0.1:5901:5901"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
