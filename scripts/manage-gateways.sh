@@ -151,9 +151,9 @@ start_live() {
         -e TRADING_MODE=live \
         -e TWS_PORT=4001 \
         -e JAVA_HEAP_SIZE="${JAVA_HEAP_SIZE}" \
-        -p 127.0.0.1:4001:4001 \
+        -p 127.0.0.1:4001:4003 \
         -p 127.0.0.1:4003:4003 \
-        -p 127.0.0.1:5901:5901 \
+        -p 127.0.0.1:5901:5900 \
         "$IMAGE"
 
     echo "✅ ib-gateway-live container launched."
