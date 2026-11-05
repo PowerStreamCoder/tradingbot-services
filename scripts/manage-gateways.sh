@@ -171,9 +171,10 @@ start_live() {
 
 stop_live() {
     echo "Stopping Live Gateway (ib-gateway-live)..."
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live"; then
-        docker stop ib-gateway-live
-        echo "✅ ib-gateway-live stopped."
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live"; then
+        docker stop ib-gateway-live 2>/dev/null || true
+        docker rm ib-gateway-live 2>/dev/null || true
+        echo "✅ ib-gateway-live stopped and removed."
     else
         echo "ib-gateway-live is not running."
     fi
