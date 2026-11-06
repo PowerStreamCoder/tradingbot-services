@@ -14,6 +14,8 @@ User=i030983
 Group=i030983
 WorkingDirectory=/home/i030983/tradingbots
 Environment="PYTHONPATH=/home/i030983/tradingbots"
+Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
+Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
 
 # Allow systemctl commands without password
 Environment="SUDO_ASKPASS=/bin/false"

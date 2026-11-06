@@ -43,6 +43,8 @@ WorkingDirectory=/home/i030983/tradingbot-tools
 
 Environment=BOTS_DIR=/home/i030983/tradingbots
 Environment=PYTHONPATH=/home/i030983/tradingbot-tools
+Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
+Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
 # IB Gateway ports and client IDs for --broker-reconcile.
 # Paper = 4002 (Client ID 20); Live = 4001 (Client ID 21).
 # Bots use Client IDs 3-8; Flatness Gate uses Client ID 22.

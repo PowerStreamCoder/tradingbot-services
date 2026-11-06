@@ -12,6 +12,8 @@ Type=simple
 User=i030983
 WorkingDirectory=/home/i030983/tradingbots
 Environment="PYTHONUNBUFFERED=1"
+Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
+Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
 EnvironmentFile=/home/i030983/.trading_profile
 ExecStart=/home/i030983/venv311/bin/python3 -m notification_service.main
 Restart=always
