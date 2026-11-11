@@ -144,7 +144,7 @@ start_live() {
     echo "Launching ib-gateway-live with --memory=${MEM_LIMIT}, --memory-swap=${MEM_LIMIT}, JAVA_HEAP_SIZE=${JAVA_HEAP_SIZE}..."
     docker run -d \
         --name ib-gateway-live \
-        --restart unless-stopped \
+        --restart no \
         --memory="${MEM_LIMIT}" \
         --memory-swap="${MEM_LIMIT}" \
         --env-file "$LIVE_ENV" \
