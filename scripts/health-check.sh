@@ -46,6 +46,7 @@ IB_PORT="${IB_PORT:-4002}"
 IB_PAPER_PORT="${IB_PAPER_PORT:-$IB_PORT}"
 IB_LIVE_PORT="${IB_LIVE_PORT:-4001}"
 CHECK_LIVE_GATEWAY="${CHECK_LIVE_GATEWAY:-auto}"
+LIVE_GATEWAY_MARKET_HOURS_ONLY="${LIVE_GATEWAY_MARKET_HOURS_ONLY:-1}"
 DISK_THRESHOLD_PCT="${DISK_THRESHOLD_PCT:-80}"
 MEM_AVAIL_FLOOR_PCT="${MEM_AVAIL_FLOOR_PCT:-10}"
 REPEAT_INTERVAL_SECONDS="${REPEAT_INTERVAL_SECONDS:-3600}"
@@ -125,6 +126,22 @@ is_port_listening() {
     fi
 }
 
+# Check if current time is within US regular live trading window (Mon-Fri 09:00 - 17:00 ET).
+# Off-hours gateway shutdowns (e.g. IBKR nightly reset ~00:00-01:00 UTC) are expected.
+is_live_trading_window() {
+    if [ "${LIVE_GATEWAY_MARKET_HOURS_ONLY:-1}" != "1" ]; then
+        return 0
+    fi
+    local dow hour_min
+    dow=$(TZ="America/New_York" date +%u 2>/dev/null || date +%u)
+    hour_min=$(TZ="America/New_York" date +%H%M 2>/dev/null || date +%H%M)
+    # Monday(1) through Friday(5), 09:00 through 17:00 ET
+    if (( dow >= 1 && dow <= 5 )) && (( 10#$hour_min >= 900 && 10#$hour_min <= 1700 )); then
+        return 0
+    fi
+    return 1
+}
+
 log "health check start"
 
 # 1. Docker daemon ------------------------------------------------------------
@@ -168,18 +185,23 @@ elif [ "$CHECK_LIVE_GATEWAY" = "auto" ]; then
 fi
 
 if [ "$should_check_live" -eq 1 ]; then
-    gw_live_ok=1
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live" && gw_live_ok=0
-    report "$gw_live_ok" ib-gateway-live critical \
-        "IB Gateway Live container is not running" \
-        "The 'ib-gateway-live' container is absent from 'docker ps'. Live bots cannot reach the broker."
+    if ! is_live_trading_window; then
+        rm -f "$STATE_DIR/ib-gateway-live" "$STATE_DIR/ib-gateway-live-port" 2>/dev/null || true
+        log "outside live trading window (Mon-Fri 09:00-17:00 ET); skipping live gateway checks"
+    else
+        gw_live_ok=1
+        docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "ib-gateway-live" && gw_live_ok=0
+        report "$gw_live_ok" ib-gateway-live critical \
+            "IB Gateway Live container is not running" \
+            "The 'ib-gateway-live' container is absent from 'docker ps'. Live bots cannot reach the broker."
 
-    if [ "$gw_live_ok" -eq 0 ]; then
-        port_live_ok=1
-        is_port_listening "${IB_LIVE_PORT}" && port_live_ok=0
-        report "$port_live_ok" ib-gateway-live-port critical \
-            "IB Gateway Live API port ${IB_LIVE_PORT} is not listening" \
-            "Nothing is listening on tcp/${IB_LIVE_PORT}: the live gateway is up but not serving the API."
+        if [ "$gw_live_ok" -eq 0 ]; then
+            port_live_ok=1
+            is_port_listening "${IB_LIVE_PORT}" && port_live_ok=0
+            report "$port_live_ok" ib-gateway-live-port critical \
+                "IB Gateway Live API port ${IB_LIVE_PORT} is not listening" \
+                "Nothing is listening on tcp/${IB_LIVE_PORT}: the live gateway is up but not serving the API."
+        fi
     fi
 fi
 

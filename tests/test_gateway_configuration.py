@@ -121,6 +121,57 @@ class TestGatewayConfiguration(unittest.TestCase):
             self.assertNotIn("AUDITOR_CLIENT_ID_PAPER=" + bid, content)
             self.assertNotIn("AUDITOR_CLIENT_ID_LIVE=" + bid, content)
 
+    def test_live_gateway_market_hours_gating_in_watchdog_and_health_scripts(self):
+        """Verify ops-watchdog.sh and health-check.sh gate live gateway checks to market hours."""
+        import tempfile
+        for script_path in [self.watchdog_script, self.health_script]:
+            script_name = os.path.basename(script_path)
+            with open(script_path, "r") as f:
+                content = f.read()
+
+            self.assertIn("LIVE_GATEWAY_MARKET_HOURS_ONLY", content, f"{script_name} must configure LIVE_GATEWAY_MARKET_HOURS_ONLY")
+            self.assertIn("is_live_trading_window", content, f"{script_name} must define is_live_trading_window")
+
+            with tempfile.TemporaryDirectory() as td:
+                mock_date = os.path.join(td, "date")
+                with open(mock_date, "w") as f:
+                    f.write("""#!/bin/bash
+if [ "$1" = "+%u" ]; then
+    echo "${MOCK_DOW:-1}"
+elif [ "$1" = "+%H%M" ]; then
+    echo "${MOCK_HM:-1200}"
+else
+    /bin/date "$@"
+fi
+""")
+                os.chmod(mock_date, 0o755)
+
+                test_cmd = f"""
+                export PATH="{td}:$PATH"
+                eval "$(sed -n '/^is_live_trading_window()/,/^}}/p' '{script_path}')"
+
+                # 1. Unconstrained when LIVE_GATEWAY_MARKET_HOURS_ONLY=0
+                LIVE_GATEWAY_MARKET_HOURS_ONLY=0 MOCK_DOW=6 MOCK_HM=0100 is_live_trading_window || exit 1
+
+                # 2. Weekends -> out of window (exit code 1 from function)
+                MOCK_DOW=6 MOCK_HM=1200 is_live_trading_window && exit 2 # Saturday
+                MOCK_DOW=7 MOCK_HM=1200 is_live_trading_window && exit 3 # Sunday
+
+                # 3. Off-hours weekdays -> out of window
+                MOCK_DOW=4 MOCK_HM=0859 is_live_trading_window && exit 4 # 08:59 ET
+                MOCK_DOW=4 MOCK_HM=1701 is_live_trading_window && exit 5 # 17:01 ET
+                MOCK_DOW=4 MOCK_HM=2000 is_live_trading_window && exit 6 # 20:00 ET (01:00 UTC overnight)
+
+                # 4. In-window weekdays -> in window (exit code 0 from function)
+                MOCK_DOW=1 MOCK_HM=0900 is_live_trading_window || exit 7 # Mon 09:00 ET
+                MOCK_DOW=3 MOCK_HM=1430 is_live_trading_window || exit 8 # Wed 14:30 ET
+                MOCK_DOW=5 MOCK_HM=1700 is_live_trading_window || exit 9 # Fri 17:00 ET
+
+                exit 0
+                """
+                res = subprocess.run(["bash", "-c", test_cmd], capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0, f"Market hours gating test failed for {script_name} (code {res.returncode}): {res.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()
