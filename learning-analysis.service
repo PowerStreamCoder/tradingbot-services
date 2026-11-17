@@ -17,8 +17,15 @@ WorkingDirectory=/home/i030983/tradingbots
 Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
 Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
 
-# Execute analysis script
-ExecStart=/usr/bin/python3 /home/i030983/tradingbots/scripts/run_learning_analysis.py
+# Execute analysis script.
+# --run-async-backtests spawns the detached backtest-simulation worker
+# (scripts/run_async_backtests.py) AFTER findings are saved, so queued
+# learning candidates get their ΔSharpe/ΔPnL deltas computed and the
+# clamped_micro non-regression gate can actually fire. Without this flag the
+# engine sets backtest_status="queued" but nothing ever dequeues it (#269).
+# The worker is detached (start_new_session) and does not count against this
+# unit's TimeoutStartSec=300s oneshot budget.
+ExecStart=/usr/bin/python3 /home/i030983/tradingbots/scripts/run_learning_analysis.py --run-async-backtests
 
 # Logging
 StandardOutput=journal
