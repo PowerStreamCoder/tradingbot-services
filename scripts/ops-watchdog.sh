@@ -171,7 +171,7 @@ log "ops watchdog start"
 # read from the first whitespace-delimited token: flock-style locks may be empty,
 # pidfile-style locks carry the pid on line one.
 now_epoch=$(date +%s)
-dow=$(date +%u)
+dow=$(TZ="America/New_York" date +%u 2>/dev/null || date +%u)
 weekend_extra=0
 if [ "$dow" -eq 6 ] || [ "$dow" -eq 7 ] || [ "$dow" -eq 1 ]; then
     weekend_extra=52
