@@ -436,6 +436,24 @@
       "root_cause": "ExecutionManager placed market orders with a strict 10s synchronous timeout, which is insufficient for IBKR paper trading simulated execution routing (often 11-15s). After 10s, the order was transferred to async fill monitor, but the Firestore last_command_result was not updated when the async fill later completed, leaving the dashboard reporting a failure.",
       "resolution": "Increase ExecutionManager market_order_timeout to 20s. In base.py::_do_entry_io, write last_command_result={status: 'completed'} upon successful async fill execution. Update dashboard bot_focus.js to poll pending_async_fill and check has_active_position before declaring failure.",
       "verification_cmd": "pytest tradingbot-bots/tests/test_execution_manager_coverage.py tradingbot-dashboard/tests/test_performance_tab.py"
+    },
+    {
+      "id": "ERR_EXIT_IN_PROGRESS_FALSE_FAILURE",
+      "patterns": [
+        "Exit already in progress for",
+        "returning cached result",
+        "Exit failed via handler",
+        "Failed to close bucket",
+        "Failed to execute tick-queued exit for bucket"
+      ],
+      "symptom": "Journalctl or log files print red errors '❌ [Exit] Failed to close bucket N via handler' and 'Exit failed via handler' even though the exit order was placed, filled normally in IBKR moments later, and trade logged to dashboard.",
+      "affected_files": [
+        "trading/exit_handler.py",
+        "trading/strategies/sma_crossover_trader.py"
+      ],
+      "root_cause": "When an exit order is in-flight (taking 1-3s in limit_escalation), secondary calls from concurrent ticks or the bar safety net invoke execute_exit. UnifiedExitHandler returned the initial in-progress ExitAttempt placeholder which had success=False. Calling strategies interpreted success=False as an execution failure, logging false error lines, discarding the bucket from _exit_claimed, and scheduling redundant retries.",
+      "resolution": "1) Add in_progress: bool = False to ExitResult. 2) In UnifiedExitHandler.execute_exit, mark active uncompleted exits as in_progress=True when returning cached results. 3) In SMACrossoverTrader, guard on_tick and process_bars against queuing or executing exits on buckets with exit_in_progress or active in exit_handler. 4) Handle in_progress=True in execute_exit_via_handler by returning True with an informational status instead of an error.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_exit_handler_coverage.py tradingbot-bots/tests/test_sma_coverage.py -k in_progress"
     }
   ]
 }
