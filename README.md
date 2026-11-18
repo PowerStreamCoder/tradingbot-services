@@ -17,7 +17,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **24/7 Notification Watchdog (`notification-service.service`)**: Standalone watchdog monitoring Firestore for hung bots, daily loss thresholds, and option assignment risks.
 - **Automated Failure Alerting (`service-failure-notifier@.service`)**: Systemd failure hook that alerts operators immediately via email whenever any monitored service, timer, or cron job fails (#25).
 - **Operational Watchdog (`ops-watchdog.service` / `.timer`)**: Runs `scripts/ops-watchdog.sh` every 15 minutes to catch the *silent* failure modes a VM audit surfaced (#310): stale lock files (#98), missed scheduled runs, swap saturation, gateway container crashes, data/config ownership drift (#297), and filesystem-hygiene drift. Alerts flow through the same `notify_alert.py` pipeline, and a compact health snapshot is published to Firestore (`system_health/current`) for the daily digest.
-- **Operational Health & Backup Scripts**: Automated VM diagnostics (`scripts/health-check.sh`) with auto-detecting dual-gateway checks, and database backup retention (`scripts/backup-trading-data.sh`).
+- **Operational Health & Backup Scripts**: Automated VM diagnostics (`scripts/health-check.sh`) with auto-detecting dual-gateway checks, and verified database backup creation with integrity self-testing (`scripts/backup-trading-data.sh`).
 
 ---
 
@@ -46,7 +46,7 @@ tradingbot-services/
 │   ├── ops-watchdog.sh                    # Stale-lock / missed-run / swap / gateway / ownership watchdog (#310)
 │   ├── manage-gateways.sh                 # Dual IB Gateway lifecycle manager (caps, start/stop, verify)
 │   ├── smoke-test-live-gateway.py         # Mandatory zero-size live broker verification gate
-│   ├── backup-trading-data.sh             # Operational backup script for trading data
+│   ├── backup-trading-data.sh             # Operational backup with tar integrity self-test & gated FIFO
 │   ├── systemd-failure-notify.sh          # Dispatches alerts when systemd units fail
 │   ├── cron-run.sh                        # Wrapper for cron job execution with error capture
 │   └── setup-git-hooks.sh                 # Pre-push hook preventing direct push to main

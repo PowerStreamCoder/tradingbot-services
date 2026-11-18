@@ -16,6 +16,7 @@ class TestGatewayConfiguration(unittest.TestCase):
         self.manage_script = os.path.join(self.repo_root, "scripts", "manage-gateways.sh")
         self.health_script = os.path.join(self.repo_root, "scripts", "health-check.sh")
         self.watchdog_script = os.path.join(self.repo_root, "scripts", "ops-watchdog.sh")
+        self.backup_data_script = os.path.join(self.repo_root, "scripts", "backup-trading-data.sh")
         self.gitignore_file = os.path.join(self.repo_root, ".gitignore")
 
     def test_docker_compose_valid_and_constrained(self):
@@ -171,6 +172,182 @@ fi
                 """
                 res = subprocess.run(["bash", "-c", test_cmd], capture_output=True, text=True)
                 self.assertEqual(res.returncode, 0, f"Market hours gating test failed for {script_name} (code {res.returncode}): {res.stderr}")
+
+    def test_watchdog_backup_hygiene_split_alerts(self):
+        """Verify ops-watchdog synchronizes alerts with FIFO, TTL, size, integrity, and freshness."""
+        import tempfile
+        import shutil
+        import tarfile
+
+        td = tempfile.mkdtemp(prefix="watchdog_test_")
+        try:
+            logs_dir = os.path.join(td, "logs")
+            state_dir = os.path.join(logs_dir, "health-state")
+            backups_dir = os.path.join(td, "backups")
+            os.makedirs(state_dir, exist_ok=True)
+            os.makedirs(backups_dir, exist_ok=True)
+
+            legacy_marker = os.path.join(state_dir, "hygiene-backups")
+            legacy_age_marker = os.path.join(state_dir, "hygiene-backups-age")
+            size_marker = os.path.join(state_dir, "hygiene-backups-size")
+            fifo_marker = os.path.join(state_dir, "hygiene-backups-fifo")
+            dumps_marker = os.path.join(state_dir, "hygiene-backups-dumps")
+            integrity_marker = os.path.join(state_dir, "hygiene-backups-integrity")
+            freshness_marker = os.path.join(state_dir, "hygiene-backups-freshness")
+
+            # Seed legacy markers to verify they are automatically cleared
+            with open(legacy_marker, "w") as f:
+                f.write("old")
+            with open(legacy_age_marker, "w") as f:
+                f.write("old")
+
+            trading_data_dir = os.path.join(backups_dir, "trading-data")
+            services_dir = os.path.join(backups_dir, "services")
+            os.makedirs(trading_data_dir, exist_ok=True)
+            os.makedirs(services_dir, exist_ok=True)
+
+            dummy_src = os.path.join(td, "dummy.txt")
+            with open(dummy_src, "w") as f:
+                f.write("data")
+
+            # 1. Healthy state: 3 valid archives, latest is fresh (<50h)
+            for i in range(3):
+                fpath = os.path.join(trading_data_dir, f"trading-state-2026100{i}.tar.gz")
+                with tarfile.open(fpath, "w:gz") as tar:
+                    tar.add(dummy_src, arcname="dummy.txt")
+
+                sdir = os.path.join(services_dir, f"backup-2026100{i}-120000")
+                os.makedirs(sdir, exist_ok=True)
+
+            # Fresh operational profile dump (< 30 days old)
+            fresh_profile = os.path.join(backups_dir, "trading_profile_backup_fresh.txt")
+            with open(fresh_profile, "w") as f:
+                f.write("paper")
+
+            env = os.environ.copy()
+            env["OPS_WATCHDOG_LOG_DIR"] = logs_dir
+            env["BACKUP_DIR"] = backups_dir
+            env["OPS_WATCHDOG_DRY_RUN"] = "1"
+            env["BACKUP_MAX_GB"] = "1"
+            env["BACKUP_MAX_AGE_DAYS"] = "30"
+            env["BACKUP_MAX_HOURS"] = "50"
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(legacy_marker), "Legacy marker must be cleared on healthy run")
+            self.assertFalse(os.path.exists(legacy_age_marker), "Legacy age marker must be cleared")
+            self.assertFalse(os.path.exists(size_marker), "Size marker must not trigger for small backup")
+            self.assertFalse(os.path.exists(fifo_marker), "FIFO marker must not trigger when count <= 3")
+            self.assertFalse(os.path.exists(dumps_marker), "Dumps marker must not trigger for fresh dumps")
+            self.assertFalse(os.path.exists(integrity_marker), "Integrity marker must not trigger for valid tarball")
+            self.assertFalse(os.path.exists(freshness_marker), "Freshness marker must not trigger for fresh tarball")
+
+            # 2. FIFO Violation: Add a 4th backup to trading-data (exceeds FIFO limit of 3)
+            date_marker = os.path.join(state_dir, "hygiene-last-run-date")
+            if os.path.exists(date_marker):
+                os.remove(date_marker)
+            fourth_backup = os.path.join(trading_data_dir, "trading-state-extra.tar.gz")
+            with tarfile.open(fourth_backup, "w:gz") as tar:
+                tar.add(dummy_src, arcname="dummy.txt")
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(os.path.exists(fifo_marker), "FIFO marker must be created when count > 3")
+
+            # 3. Operational Dump TTL Violation: Add a profile switch dump > 30 days old
+            if os.path.exists(date_marker):
+                os.remove(date_marker)
+            old_time = 1000000000
+            stale_profile = os.path.join(backups_dir, "trading_profile_backup_old.txt")
+            with open(stale_profile, "w") as f:
+                f.write("live")
+            os.utime(stale_profile, (old_time, old_time))
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(os.path.exists(dumps_marker), "Dumps marker must trigger for operational dumps > 30 days")
+
+            # 4. Integrity Violation: Corrupt the latest archive (write garbage)
+            if os.path.exists(date_marker):
+                os.remove(date_marker)
+            corrupt_backup = os.path.join(trading_data_dir, "trading-state-latest-corrupt.tar.gz")
+            with open(corrupt_backup, "wb") as f:
+                f.write(b"this is corrupt not gzip")
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(os.path.exists(integrity_marker), "Integrity marker must trigger for corrupt tarball")
+
+            # Verify alert text in log
+            alerts_log = os.path.join(logs_dir, "health-alerts.log")
+            with open(alerts_log, "r") as f:
+                content = f.read()
+            self.assertIn("FIFO backup retention limit exceeded", content)
+            self.assertIn("Latest trading data backup is corrupted", content)
+            self.assertIn("Stale operational backup dumps found", content)
+
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+    def test_backup_trading_data_script_verification_and_gated_pruning(self):
+        """Verify backup-trading-data.sh creates verified archives, enforces FIFO, and gates pruning."""
+        import tempfile
+        import shutil
+        import tarfile
+
+        td = tempfile.mkdtemp(prefix="backup_script_test_")
+        try:
+            fake_home = os.path.join(td, "home")
+            backup_dir = os.path.join(td, "backups")
+            data_dir = os.path.join(fake_home, "tradingbots", "data")
+            config_dir = os.path.join(fake_home, "tradingbot-config")
+            os.makedirs(data_dir, exist_ok=True)
+            os.makedirs(config_dir, exist_ok=True)
+
+            with open(os.path.join(data_dir, "state.json"), "w") as f:
+                f.write('{"status": "ok"}')
+            with open(os.path.join(config_dir, "bots.json"), "w") as f:
+                f.write('{"bots": []}')
+
+            env = os.environ.copy()
+            env["HOME"] = fake_home
+            env["BACKUP_DIR"] = backup_dir
+
+            # 1. Run backup script
+            res = subprocess.run(["bash", self.backup_data_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"Backup script failed: {res.stderr}")
+            self.assertIn("Backup created and verified:", res.stdout)
+
+            # Check created file
+            backups = [f for f in os.listdir(backup_dir) if f.startswith("trading-state-") and f.endswith(".tar.gz")]
+            self.assertEqual(len(backups), 1)
+
+            # Verify contents of archive
+            archive_path = os.path.join(backup_dir, backups[0])
+            with tarfile.open(archive_path, "r:gz") as tar:
+                names = tar.getnames()
+                self.assertIn("tradingbots/data", names)
+                self.assertIn("tradingbot-config", names)
+
+            # 2. Run 3 more times to verify FIFO (keep max 3)
+            for _ in range(3):
+                import time
+                time.sleep(1.05)  # Ensure unique second timestamp
+                res = subprocess.run(["bash", self.backup_data_script], env=env, capture_output=True, text=True)
+                self.assertEqual(res.returncode, 0)
+
+            backups = [f for f in os.listdir(backup_dir) if f.startswith("trading-state-") and f.endswith(".tar.gz")]
+            self.assertEqual(len(backups), 3, "FIFO must prune oldest backups and keep strictly 3")
+
+            # 3. Verify failure behavior: empty directory should exit 1 and not create corrupt archive
+            empty_home = os.path.join(td, "empty_home")
+            os.makedirs(empty_home, exist_ok=True)
+            env["HOME"] = empty_home
+            res = subprocess.run(["bash", self.backup_data_script], env=env, capture_output=True, text=True)
+            self.assertNotEqual(res.returncode, 0, "Script must fail when no data exists to back up")
+
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
 
 
 if __name__ == "__main__":
