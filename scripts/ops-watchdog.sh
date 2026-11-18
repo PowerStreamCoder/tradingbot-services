@@ -54,7 +54,9 @@ BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 LOCK_MAX_AGE_MIN="${LOCK_MAX_AGE_MIN:-60}"
 SWAP_WARN_MB="${SWAP_WARN_MB:-600}"
 BACKUP_MAX_GB="${BACKUP_MAX_GB:-5}"
-BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-14}"
+BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-30}"
+BACKUP_MAX_HOURS="${BACKUP_MAX_HOURS:-50}"
+TELEMETRY_RETENTION_DAYS="${TELEMETRY_RETENTION_DAYS:-14}"
 REPEAT_INTERVAL_SECONDS="${REPEAT_INTERVAL_SECONDS:-3600}"
 IB_PAPER_PORT="${IB_PAPER_PORT:-4002}"
 IB_LIVE_PORT="${IB_LIVE_PORT:-4001}"
@@ -169,6 +171,11 @@ log "ops watchdog start"
 # read from the first whitespace-delimited token: flock-style locks may be empty,
 # pidfile-style locks carry the pid on line one.
 now_epoch=$(date +%s)
+dow=$(date +%u)
+weekend_extra=0
+if [ "$dow" -eq 6 ] || [ "$dow" -eq 7 ] || [ "$dow" -eq 1 ]; then
+    weekend_extra=52
+fi
 lock_age_limit=$(( LOCK_MAX_AGE_MIN * 60 ))
 stale_lock_count=0
 if [ -d "$LOCK_SCAN_DIR" ]; then
@@ -271,17 +278,12 @@ if command -v systemctl >/dev/null 2>&1; then
         fi
     }
     # For weekday-only timers (trade-log-auditor, learning-analysis), Friday afternoon/night
-    # to Monday afternoon/night is ~72h. On Saturday (6), Sunday (7), and Monday (1), add
-    # 52 hours tolerance so normal weekend gaps do not trigger false positive alerts.
-    dow=$(date +%u)
-    weekend_extra=0
-    if [ "$dow" -eq 6 ] || [ "$dow" -eq 7 ] || [ "$dow" -eq 1 ]; then
-        weekend_extra=52
-    fi
+    # to Monday afternoon/night is ~72h. On Saturday (6), Sunday (7), and Monday (1), weekend_extra
+    # (+52h) is added so normal weekend gaps do not trigger false positive alerts.
     auditor_limit=$(( ${AUDITOR_MAX_HOURS:-26} + weekend_extra ))
     learning_limit=$(( ${LEARNING_MAX_HOURS:-50} + weekend_extra ))
     check_timer "trade-log-auditor.timer" "$auditor_limit"
-    check_timer "trading-data-backup.timer" "${BACKUP_MAX_HOURS:-50}"
+    check_timer "trading-data-backup.timer" "$(( ${BACKUP_MAX_HOURS:-50} + weekend_extra ))"
     check_timer "learning-analysis.timer" "$learning_limit"
 fi
 SNAP_MISSED_RUNS=$missed_count
@@ -425,21 +427,102 @@ Remediation: review and remove them (git status will show tracked ones)." \
         report 0 hygiene-cruft medium "Backup/output cruft in source or config trees" ""
     fi
 
-    # 5b. Backup directory size & snapshot age.
+    # 5b. Backup directory size & retention checks (synchronized with backup lifecycles).
     if [ -d "$BACKUP_DIR" ]; then
         backup_kb=$(du -sk "$BACKUP_DIR" 2>/dev/null | awk '{print $1}')
         backup_kb=${backup_kb:-0}
         backup_max_kb=$(( BACKUP_MAX_GB * 1024 * 1024 ))
-        old_snap=$(find "$BACKUP_DIR" -type f -mtime "+${BACKUP_MAX_AGE_DAYS}" -print 2>/dev/null | head -n 5)
-        if [ "$backup_kb" -gt "$backup_max_kb" ] || [ -n "$old_snap" ]; then
+
+        # 5b-1. Check total size against capacity limit
+        if [ "$backup_kb" -gt "$backup_max_kb" ]; then
             backups_ok=0
-            report 1 hygiene-backups medium \
-                "Backup directory over size/age limits" \
-                "Backups at $BACKUP_DIR use $(( backup_kb / 1024 )) MB (limit ${BACKUP_MAX_GB} GB) or contain snapshots older than ${BACKUP_MAX_AGE_DAYS} days. Remediation: prune old snapshots (backup-trading-data.sh keeps the newest 3)." \
+            report 1 hygiene-backups-size medium \
+                "Backup directory exceeds size limit" \
+                "Backups at $BACKUP_DIR use $(( backup_kb / 1024 )) MB (limit ${BACKUP_MAX_GB} GB). Remediation: remove unneeded backup files or increase BACKUP_MAX_GB limit." \
                 86400
         else
-            report 0 hygiene-backups medium "Backup directory over size/age limits" ""
+            report 0 hygiene-backups-size medium "Backup directory exceeds size limit" ""
         fi
+
+        # 5b-2. FIFO retention check for snapshot & deployment directories
+        # Contract: each subfolder (trading-data, services, bots, config, tools) keeps at most 3 backups
+        fifo_violations=""
+        for sub in trading-data services bots config tools; do
+            sub_dir="$BACKUP_DIR/$sub"
+            [ -d "$sub_dir" ] || continue
+            cnt=$(find "$sub_dir" -maxdepth 1 \( -name 'trading-state-*.tar.gz' -o -name 'backup-*' \) 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$cnt" -gt 3 ]; then
+                fifo_violations="$fifo_violations"$'\n'"- $sub: found $cnt backups (FIFO limit: 3)"
+            fi
+        done
+        if [ -n "$fifo_violations" ]; then
+            backups_ok=0
+            report 1 hygiene-backups-fifo medium \
+                "FIFO backup retention limit exceeded (> 3)" \
+                "The following backup directories exceed the FIFO retention limit (max 3):${fifo_violations}
+Remediation: prune older backups in the offending directories (only the newest 3 should be kept)." \
+                86400
+        else
+            report 0 hygiene-backups-fifo medium "FIFO backup retention limit exceeded (> 3)" ""
+        fi
+
+        # 5b-3. TTL check for operational dumps (profile switches, manual bot resets)
+        # Contract: temporary dumps older than BACKUP_MAX_AGE_DAYS (30d) should be cleaned up
+        old_dumps=$(find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'trading_profile_backup_*.txt' -o -name 'trader_state_*_backup_*.json' \) \
+                     -mtime "+${BACKUP_MAX_AGE_DAYS}" -print 2>/dev/null | head -n 5)
+        if [ -n "$old_dumps" ]; then
+            backups_ok=0
+            report 1 hygiene-backups-dumps medium \
+                "Stale operational backup dumps found (> ${BACKUP_MAX_AGE_DAYS} days)" \
+                "Operational dumps in $BACKUP_DIR exceed retention of ${BACKUP_MAX_AGE_DAYS} days (first 5):
+${old_dumps}
+Remediation: remove old profile switch or bot reset files." \
+                86400
+        else
+            report 0 hygiene-backups-dumps medium "Stale operational backup dumps found (> ${BACKUP_MAX_AGE_DAYS} days)" ""
+        fi
+
+        # 5b-4. Archive integrity & freshness verification for trading data backups
+        # Contract: latest snapshot must be non-empty, pass 'tar -tzf', and not be older than BACKUP_MAX_HOURS (+ weekend tolerance)
+        if [ -d "$BACKUP_DIR/trading-data" ]; then
+            latest_tar=$(ls -dt "$BACKUP_DIR"/trading-data/trading-state-*.tar.gz 2>/dev/null | head -n 1)
+            if [ -z "$latest_tar" ]; then
+                backups_ok=0
+                report 1 hygiene-backups-freshness high \
+                    "No trading data backups found" \
+                    "No backup files found in $BACKUP_DIR/trading-data. Remediation: run 'bash scripts/backup-trading-data.sh' to establish initial backup."
+                report 0 hygiene-backups-integrity high "Latest trading data backup is corrupted" ""
+            else
+                # Check archive integrity
+                if [ ! -s "$latest_tar" ] || ! tar -tzf "$latest_tar" >/dev/null 2>&1; then
+                    backups_ok=0
+                    report 1 hygiene-backups-integrity high \
+                        "Latest trading data backup is corrupted" \
+                        "Latest backup archive '$latest_tar' is empty or failed integrity test (tar -tzf). Remediation: run 'bash scripts/backup-trading-data.sh' to create a fresh valid backup."
+                else
+                    report 0 hygiene-backups-integrity high "Latest trading data backup is corrupted" ""
+                fi
+
+                # Check archive freshness
+                tar_mtime=$(file_mtime "$latest_tar")
+                if [ -n "$tar_mtime" ]; then
+                    tar_age_h=$(( (now_epoch - tar_mtime) / 3600 ))
+                    freshness_limit=$(( ${BACKUP_MAX_HOURS:-50} + weekend_extra ))
+                    if [ "$tar_age_h" -gt "$freshness_limit" ]; then
+                        backups_ok=0
+                        report 1 hygiene-backups-freshness high \
+                            "Latest trading backup is stale (${tar_age_h}h old)" \
+                            "Latest backup '$latest_tar' was created ${tar_age_h}h ago (limit ${freshness_limit}h). The scheduled backup process may have silently failed. Remediation: run 'bash scripts/backup-trading-data.sh' and check systemctl status trading-data-backup.service."
+                    else
+                        report 0 hygiene-backups-freshness high "Latest trading backup is stale" ""
+                    fi
+                fi
+            fi
+        fi
+
+        # Clear legacy alert markers if present from earlier watchdog versions
+        report 0 hygiene-backups medium "Backup directory over size/age limits" ""
+        report 0 hygiene-backups-age medium "Old backup snapshots found (> ${BACKUP_MAX_AGE_DAYS} days)" ""
     fi
 
     # 5c. Telemetry log directory hygiene (.ndjson retention: 14 days).
@@ -447,7 +530,7 @@ Remediation: review and remove them (git status will show tracked ones)." \
     for metrics_dir in $HOME/tradingbots/data/*/execution_metrics $HOME/tradingbots/logs/execution_metrics; do
         [ -d "$metrics_dir" ] || continue
         find "$metrics_dir" -type f \( -name '*.ndjson.*' -o -name '*.ndjson-*.gz' -o -name '*.ndjson.gz' \) \
-             -mtime "+${BACKUP_MAX_AGE_DAYS}" -delete 2>/dev/null || true
+             -mtime "+${TELEMETRY_RETENTION_DAYS}" -delete 2>/dev/null || true
     done
 fi
 # backups_ok only reflects a day we actually scanned; on skipped runs keep the
