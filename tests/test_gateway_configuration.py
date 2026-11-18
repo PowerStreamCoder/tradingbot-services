@@ -349,6 +349,15 @@ fi
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_ops_watchdog_weekend_tolerance_uses_eastern_timezone(self):
+        """Verify ops-watchdog evaluates day-of-week in America/New_York for weekend tolerance."""
+        with open(self.watchdog_script, "r") as f:
+            content = f.read()
+
+        # The global dow calculation for weekend tolerance must evaluate in America/New_York
+        self.assertIn('dow=$(TZ="America/New_York" date +%u 2>/dev/null || date +%u)', content,
+                      "Weekend tolerance DOW calculation must use America/New_York timezone to prevent false alerts on Monday evening (Tuesday UTC)")
+
 
 if __name__ == "__main__":
     unittest.main()
