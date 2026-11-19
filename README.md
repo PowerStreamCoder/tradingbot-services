@@ -12,7 +12,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **Market Schedule Timers**: Systemd timers automatically start bot processes prior to market open (8:51 AM ET) and execute graceful shutdown procedures after market close (4:39 PM ET).
 - **Graceful Shutdown (`stop_bots.sh`)**: Sends orderly SIGTERM signals, providing bots a 25-second window to persist open bucket states and flush logs before hard termination.
 - **Bot Control API Unit (`bot-control-api.service`)**: Runs the authenticated REST command server (`:8080`) enabling remote actions from the Cloud Run Dashboard. Configured with dedicated `WorkingDirectory`, `PYTHONPATH`, and drop-in `override.conf` for `BOT_CONTROL_API_KEY`.
-- **Trade Log Auditor Unit (`trade-log-auditor.service` / `.timer`)**: Runs the offline post-close trade-log auditor at 4:45 PM ET Mon-Fri with `--date latest`, verifying trade integrity before nightly learning runs.
+- **Trade Log Auditor Unit (`trade-log-auditor.service` / `.timer`)**: Runs the offline post-close trade-log auditor at 4:45 PM ET Mon-Fri with `--date latest`, verifying trade integrity across state files, emergency spool (`/data/spool`), and broker snapshots before nightly learning runs.
 - **Nightly Learning Analysis Unit (`learning-analysis.service` / `.timer`)**: Runs post-market learning analysis at 11:00 PM ET.
 - **24/7 Notification Watchdog (`notification-service.service`)**: Standalone watchdog monitoring Firestore for hung bots, daily loss thresholds, and option assignment risks.
 - **Automated Failure Alerting (`service-failure-notifier@.service`)**: Systemd failure hook that alerts operators immediately via email whenever any monitored service, timer, or cron job fails (#25).
@@ -146,7 +146,11 @@ sudo journalctl -u trade-log-auditor -n 100 --no-pager
 
 # Run an audit manually
 cd /home/i030983/tradingbot-tools
-python3 -m auditor --date latest --dry-run
+python3 -m auditor --date latest \
+    --broker-snapshot \
+    --spool-dir /home/i030983/tradingbots/data/spool \
+    --state-file /home/i030983/tradingbots/data/state/*.json \
+    --dry-run
 ```
 
 ### 4. Bot Control API & Authentication
