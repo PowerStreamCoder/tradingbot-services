@@ -454,6 +454,24 @@
       "root_cause": "When an exit order is in-flight (taking 1-3s in limit_escalation), secondary calls from concurrent ticks or the bar safety net invoke execute_exit. UnifiedExitHandler returned the initial in-progress ExitAttempt placeholder which had success=False. Calling strategies interpreted success=False as an execution failure, logging false error lines, discarding the bucket from _exit_claimed, and scheduling redundant retries.",
       "resolution": "1) Add in_progress: bool = False to ExitResult. 2) In UnifiedExitHandler.execute_exit, mark active uncompleted exits as in_progress=True when returning cached results. 3) In SMACrossoverTrader, guard on_tick and process_bars against queuing or executing exits on buckets with exit_in_progress or active in exit_handler. 4) Handle in_progress=True in execute_exit_via_handler by returning True with an informational status instead of an error.",
       "verification_cmd": "pytest tradingbot-bots/tests/test_exit_handler_coverage.py tradingbot-bots/tests/test_sma_coverage.py -k in_progress"
+    },
+    {
+      "id": "ERR_WATCHDOG_STALE_OPERATIONAL_BACKUP_DUMP",
+      "patterns": [
+        "Stale operational backup dumps found",
+        "Operational dumps in /home/i030983/backups exceed retention",
+        "trading_profile_backup_",
+        "hygiene-backups-dumps"
+      ],
+      "symptom": "Operator receives medium-severity notification from ops-watchdog: 'Stale operational backup dumps found (> 30 days)' for ad-hoc profile switch backups (trading_profile_backup_*.txt) or reset files (trader_state_*_backup_*.json).",
+      "affected_files": [
+        "tradingbot-bots/trading/bot_control_api.py",
+        "tradingbot-services/scripts/backup-trading-data.sh",
+        "tradingbot-services/scripts/ops-watchdog.sh"
+      ],
+      "root_cause": "1) bot_control_api.py used shutil.copy2(profile_file, backup_file) which preserved the source profile file's historical mtime (e.g. from months earlier), causing newly created backups to immediately appear >30 days old to find -mtime +30. 2) cleanup_old_backups was only invoked inside switch_profile() and only matched trading_profile_backup_*.txt, omitting trader_state_*_backup_*.json. 3) Daily/weekly maintenance scripts lacked automated pruning of ad-hoc operational dumps.",
+      "resolution": "1) Call os.utime(backup_file, None) after copying profile and state backup files so mtime reflects creation time. 2) Expand cleanup_old_backups in bot_control_api.py to prune both profile dumps and trader_state dumps and call it on reset as well. 3) Add automated pruning of stale operational dumps (>30 days) to backup-trading-data.sh. 4) Remove stale dump files from ~/backups on the VM to clear the active watchdog marker.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_bot_control_api_coverage.py -k TestCleanupBackups && pytest tradingbot-services/tests/test_gateway_configuration.py -k test_backup_trading_data_script_verification_and_gated_pruning"
     }
   ]
 }
