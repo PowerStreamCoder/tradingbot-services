@@ -1,7 +1,25 @@
 {
-  "version": "1.3.0",
+  "version": "1.5.0",
   "description": "Error fingerprint database mapping stack traces, error messages, and symptoms to root causes and quick resolutions.",
   "fingerprints": [
+    {
+      "id": "ERR_AUDITOR_HISTORICAL_BROKER_MISSING_FILL",
+      "patterns": [
+        "Firestore trade has no broker execution",
+        "Trade with executionId=",
+        "exists in Firestore but was not found in the broker's execution report for this session",
+        "broker_missing_fill"
+      ],
+      "symptom": "Operator receives high-severity audit notification: 'Firestore trade has no broker execution: SYMBOL/TRADE_ID. Trade with executionId=... exists in Firestore but was not found in the broker's execution report for this session. The fill may have been recorded with a wrong execution ID, or this is a fabricated record.'",
+      "affected_files": [
+        "tradingbot-tools/auditor/pipeline.py",
+        "tradingbot-tools/auditor/detectors.py",
+        "tradingbot-tools/auditor/collectors.py"
+      ],
+      "root_cause": "The Trade Log Auditor runs post-close with '--date latest' auditing the previous completed session (yesterday/Friday). IB Gateway execution reports (reqExecutions) only retain fills for the current calendar session and purge previous-day executions upon daily overnight reset (23:45 ET). When queried for a historical session without persistence, IB Gateway returns 0 fills, causing historical runs to permanently skip broker reconciliation (Issue #132 F1).",
+      "resolution": "In auditor/pipeline.py, capture same-day broker execution snapshots in Firestore 'broker_executions/{date}' and local snapshots directory. During historical or '--date latest' runs, restore executions from the snapshot. If no snapshot exists, emit 'broker_missing_fill: NOT CHECKED' and record explicit 'skipped_checks' telemetry rather than quietly bypassing the check.",
+      "verification_cmd": "python3 -m pytest tests/test_auditor_enhancements_132.py"
+    },
     {
       "id": "ERR_IBKR_COMPETING_SESSION_10197",
       "patterns": [
