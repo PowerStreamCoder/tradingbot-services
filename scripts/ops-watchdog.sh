@@ -414,7 +414,11 @@ if [ "$run_hygiene" -eq 1 ]; then
     for dir in $HYGIENE_DIRS; do
         [ -d "$dir" ] || continue
         hit=$(find "$dir" \( -name '*.backup_*' -o -name '*.bak' -o -name '*.out' \) \
-              -not -path '*/.git/*' -print 2>/dev/null | head -n 10)
+              -not -path '*/.git/*' \
+              -not -path '*/data/*' \
+              -not -path '*/.venv/*' \
+              -not -path '*/venv/*' \
+              -not -name 'trader_state_*.json.bak' -print 2>/dev/null | head -n 10)
         [ -n "$hit" ] && cruft="$cruft"$'\n'"$hit"
     done
     if [ -n "$cruft" ]; then
