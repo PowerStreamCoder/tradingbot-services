@@ -289,6 +289,68 @@ fi
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_watchdog_source_hygiene_ignores_runtime_state_backups(self):
+        """Verify ops-watchdog ignores runtime trader_state_*.json.bak in data/ but flags source tree cruft."""
+        import tempfile
+        import shutil
+
+        td = tempfile.mkdtemp(prefix="watchdog_cruft_test_")
+        try:
+            logs_dir = os.path.join(td, "logs")
+            state_dir = os.path.join(logs_dir, "health-state")
+            src_dir = os.path.join(td, "tradingbots")
+            os.makedirs(state_dir, exist_ok=True)
+            os.makedirs(os.path.join(src_dir, "data", "afrm"), exist_ok=True)
+            os.makedirs(os.path.join(src_dir, ".git"), exist_ok=True)
+            os.makedirs(os.path.join(src_dir, ".venv"), exist_ok=True)
+
+            # Legitimate runtime state backups and ignored trees
+            with open(os.path.join(src_dir, "data", "afrm", "trader_state_afrm.json.bak"), "w") as f:
+                f.write('{"status": "ok"}')
+            with open(os.path.join(src_dir, ".git", "hook.bak"), "w") as f:
+                f.write("git hook backup")
+            with open(os.path.join(src_dir, ".venv", "pip.bak"), "w") as f:
+                f.write("venv backup")
+
+            env = os.environ.copy()
+            env["OPS_WATCHDOG_LOG_DIR"] = logs_dir
+            env["HYGIENE_DIRS"] = src_dir
+            env["OPS_WATCHDOG_DRY_RUN"] = "1"
+            backups_dir = os.path.join(td, "backups")
+            os.makedirs(backups_dir, exist_ok=True)
+            env["BACKUP_DIR"] = backups_dir
+
+            cruft_marker = os.path.join(state_dir, "hygiene-cruft")
+
+            # 1. Run watchdog: state backups in data/ should NOT trigger hygiene-cruft
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(cruft_marker), "hygiene-cruft must not trigger for state backups in data/")
+
+            # 2. Add real cruft in source tree: should trigger hygiene-cruft
+            date_marker = os.path.join(state_dir, "hygiene-last-run-date")
+            if os.path.exists(date_marker):
+                os.remove(date_marker)
+            stray_bak = os.path.join(src_dir, "bot.py.bak")
+            with open(stray_bak, "w") as f:
+                f.write("stray edit")
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertTrue(os.path.exists(cruft_marker), "hygiene-cruft must trigger for stray .bak in source tree")
+
+            # 3. Clean up the stray cruft: should recover and clear marker
+            if os.path.exists(date_marker):
+                os.remove(date_marker)
+            os.remove(stray_bak)
+
+            res = subprocess.run(["bash", self.watchdog_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(cruft_marker), "hygiene-cruft marker must be cleared on recovery")
+
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
     def test_backup_trading_data_script_verification_and_gated_pruning(self):
         """Verify backup-trading-data.sh creates verified archives, enforces FIFO, and gates pruning."""
         import tempfile
