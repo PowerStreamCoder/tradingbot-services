@@ -52,3 +52,9 @@ echo "Backup created and verified: $BACKUP_FILE"
 
 # 5. Enforce strict maximum of 3 backups (FIFO: delete oldest only AFTER new backup is verified)
 ls -dt "$BACKUP_DIR"/trading-state-*.tar.gz 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
+
+# 6. Prune stale operational dumps (>28 days) with buffer before watchdog 30d threshold
+PARENT_BACKUP_DIR="$(dirname "$BACKUP_DIR")"
+if [ -d "$PARENT_BACKUP_DIR" ]; then
+    find "$PARENT_BACKUP_DIR" -maxdepth 1 -type f \( -name 'trading_profile_backup_*.txt' -o -name 'trader_state_*_backup_*.json' \) -mtime +28 -delete 2>/dev/null || true
+fi

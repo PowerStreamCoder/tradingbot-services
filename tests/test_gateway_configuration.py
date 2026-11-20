@@ -346,6 +346,23 @@ fi
             res = subprocess.run(["bash", self.backup_data_script], env=env, capture_output=True, text=True)
             self.assertNotEqual(res.returncode, 0, "Script must fail when no data exists to back up")
 
+            # 4. Verify operational dump pruning in parent backup directory (>30 days)
+            env["HOME"] = fake_home
+            parent_dir = os.path.dirname(backup_dir)
+            old_time = 1000000000
+            stale_dump = os.path.join(parent_dir, "trading_profile_backup_old.txt")
+            fresh_dump = os.path.join(parent_dir, "trading_profile_backup_fresh.txt")
+            with open(stale_dump, "w") as f:
+                f.write("paper")
+            with open(fresh_dump, "w") as f:
+                f.write("paper")
+            os.utime(stale_dump, (old_time, old_time))
+
+            res = subprocess.run(["bash", self.backup_data_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertFalse(os.path.exists(stale_dump), "Stale operational dumps (>30 days) must be pruned")
+            self.assertTrue(os.path.exists(fresh_dump), "Fresh operational dumps must be retained")
+
         finally:
             shutil.rmtree(td, ignore_errors=True)
 

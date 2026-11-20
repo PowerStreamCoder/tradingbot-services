@@ -1,6 +1,5 @@
 {
   "version": "1.5.0",
-  "description": "Error fingerprint database mapping stack traces, error messages, and symptoms to root causes and quick resolutions.",
   "fingerprints": [
     {
       "id": "ERR_AUDITOR_HISTORICAL_BROKER_MISSING_FILL",
@@ -316,6 +315,39 @@
       "verification_cmd": "pytest tests/test_adaptive_covered_call_agent.py tests/test_adaptive_entry_agent.py tests/test_agent_orchestrator.py -v --no-cov"
     },
     {
+      "id": "ERR_FIRESTORE_PROJECT_RESOLUTION_MISSING",
+      "patterns": [
+        "ValueError: Project ID is required to access Firestore",
+        "Either set the projectId option, or use google-auth to supply credentials with a project ID",
+        "_mirror_to_firestore"
+      ],
+      "symptom": "Bot runtime state changes made via Bot Control API (e.g. disabling/enabling a bot) update local disk .bot_runtime_state.json on the VM, but fail to mirror to Firestore bot_runtime_controls. Cloud Run dashboard cannot see the override, resulting in state desynchronization and hiding the Enable Bot option.",
+      "affected_files": [
+        "tradingbot-bots/services/runtime_state.py",
+        "tradingbot-bots/trading/flatness_gate.py",
+        "tradingbot-services/bot-control-api.service",
+        "tradingbot-services/trading-bot-manager.service"
+      ],
+      "root_cause": "Compute Engine VM environment lacks GOOGLE_CLOUD_PROJECT env var in systemd service definitions, and firestore.Client() calls without explicit project ID fail with ValueError, silently dropping Firestore mirrors.",
+      "resolution": "Add _resolve_project() fallback to project-dfe26779-9849-4c97-9b6 in services/runtime_state.py and trading/flatness_gate.py; set Environment=\"GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6\" in systemd service files.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_runtime_state.py -k test_resolve_project_precedence"
+    },
+    {
+      "id": "ERR_WATCHDOG_DELAYED_FEED_EARLY_TERMINATE",
+      "patterns": [
+        "No current event loop in thread 'Thread-13 (_heartbeat_loop)'. Terminating for supervisor restart",
+        "[WATCHDOG] \u26a0\ufe0f  No bar data for",
+        "Terminating for supervisor restart..."
+      ],
+      "symptom": "At market open (09:42 ET), all trading bots crash simultaneously and trigger critical down alert emails to the operator.",
+      "affected_files": [
+        "tradingbot-bots/trading/base.py"
+      ],
+      "root_cause": "Delayed market data feeds (15m delay, market_data_type=3) take ~20 minutes from open (09:50 ET) for the first 5m bar to complete and deliver. Watchdog threshold was 675s (11.25m), firing at 09:41:15 ET. Reconnect failure invoked _terminate_for_restart(1) on a secondary thread with no asyncio event loop, crashing all bots.",
+      "resolution": "When delayed_bar_polling is enabled, extend watchdog threshold to max(watchdog_threshold, 1500) (25 minutes) to give the 15m delayed feed enough time to produce the initial bar at open.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_base_coverage.py"
+    },
+    {
       "id": "ERR_POSITION_CREATION_TIMEOUT_STALE_FEED",
       "patterns": [
         "Position creation timed out waiting for bot response",
@@ -352,6 +384,94 @@
       "root_cause": "The order-routing endpoints queued bots/bot_<client_id>.pending_command and returned success:true without any market-hours gate. The bot-side handlers (_process_create_position_command / _process_close_position_command in trading/base.py) refuse commands outside is_market_hours, and with dispatch-when-closed disabled (shipped default) the queued command is held until the open (measured 47m44s) - so the HTTP response never reflected what the bot would do.",
       "resolution": "main.py::_require_market_open refuses both endpoints with HTTP 409 'Market is closed. ...' before any Firestore write, using the vendored market_hours module (verbatim copy of tradingbot-bots/trading/market_hours.py) evaluated with the resolved bot's market_region/allow_extended_hours (bots.json overrides, defaults US / no extended hours). The UI already routes non-OK responses to its existing failure handlers, so the closed-market outcome renders at submit instead of at the poll timeout.",
       "verification_cmd": "python3 -m pytest tests/test_coverage_98_dashboard.py -k market -q && python3 -m pytest tests/test_market_hours.py -q"
+    },
+    {
+      "id": "ERR_PHANTOM_EXIT_RECYCLED_ORDER_ID",
+      "patterns": [
+        "Trade with entryOrderId=",
+        "already exists in Firestore! Ignoring duplicate trade logging to prevent phantom exit",
+        "PHANTOM EXIT DETECTED",
+        "manually closed trades not logged into trades table"
+      ],
+      "symptom": "Exited trades are silently omitted from the Firestore 'trades' table upon position exit, leaving closed trades unrecorded in history or performance metrics.",
+      "affected_files": [
+        "trading/dashboard.py",
+        "trading/base.py"
+      ],
+      "root_cause": "Layer 3 phantom exit defense in dashboard.py queried trades across the entire database matching entryOrderId without scoping by symbol or verifying timestamp proximity. In IBKR paper trading, integer order IDs recycle across sessions and bots. When an order ID collided with an older trade on another symbol, the new exit was falsely classified as a duplicate phantom exit and dropped.",
+      "resolution": "Scope the duplicate entryOrderId query by 'symbol == symbol' and verify timestamp proximity (entry within 1h or exit within 24h). Allow logging if the trade belongs to a distinct session/symbol.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_dashboard_coverage.py -k test_log_trade"
+    },
+    {
+      "id": "ERR_STATE_SERIALIZATION_DEQUE",
+      "patterns": [
+        "TypeError: Object of type deque is not JSON serializable",
+        "fwd_path",
+        "json.dump(state, f",
+        "json.decoder.JSONDecodeError: Unterminated string starting at",
+        "Expecting value: line"
+      ],
+      "symptom": "Bot crashes during save_state(), truncating the local state JSON file (trader_state_{symbol}.json) to an incomplete string, leading to crash-loops or loss of tracked positions on restart.",
+      "affected_files": [
+        "trading/base.py",
+        "trading/strategies/sma_crossover_trader.py"
+      ],
+      "root_cause": "PR #476 added 'fwd_path = deque(maxlen=...)' directly inside the strategy state dictionary without converting to list before serialization. Standard json.dump raises TypeError on collections.deque. Additionally, BasePaperTrader.save_state() opened the state file in 'w' mode before serialization, truncating it to empty/partial bytes when json.dump failed.",
+      "resolution": "1) Provide _json_default handler in base.py to automatically cast deque, set, and date/time objects to JSON primitives. 2) Handle explicit deque <-> list conversion in sma_crossover_trader.py save/load paths. 3) Serialize to string in-memory first before opening file in write mode, ensuring a serialization error cannot corrupt disk state.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_sma_coverage.py -k test_fwd_path"
+    },
+    {
+      "id": "ERR_MANUAL_ORDER_ASYNC_FILL_TIMEOUT",
+      "patterns": [
+        "Market order timed out after 10s",
+        "pending_async_fill: True",
+        "Order creation timed out waiting for bot response"
+      ],
+      "symptom": "Manual buy/sell orders initiated from the web dashboard appear as 'Failed' or 'Timed out' in the UI, even though the order subsequently fills in IBKR minutes or seconds later.",
+      "affected_files": [
+        "trading/execution_manager.py",
+        "trading/base.py",
+        "tradingbot-dashboard/static/js/bot_focus.js"
+      ],
+      "root_cause": "ExecutionManager placed market orders with a strict 10s synchronous timeout, which is insufficient for IBKR paper trading simulated execution routing (often 11-15s). After 10s, the order was transferred to async fill monitor, but the Firestore last_command_result was not updated when the async fill later completed, leaving the dashboard reporting a failure.",
+      "resolution": "Increase ExecutionManager market_order_timeout to 20s. In base.py::_do_entry_io, write last_command_result={status: 'completed'} upon successful async fill execution. Update dashboard bot_focus.js to poll pending_async_fill and check has_active_position before declaring failure.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_execution_manager_coverage.py tradingbot-dashboard/tests/test_performance_tab.py"
+    },
+    {
+      "id": "ERR_EXIT_IN_PROGRESS_FALSE_FAILURE",
+      "patterns": [
+        "Exit already in progress for",
+        "returning cached result",
+        "Exit failed via handler",
+        "Failed to close bucket",
+        "Failed to execute tick-queued exit for bucket"
+      ],
+      "symptom": "Journalctl or log files print red errors '❌ [Exit] Failed to close bucket N via handler' and 'Exit failed via handler' even though the exit order was placed, filled normally in IBKR moments later, and trade logged to dashboard.",
+      "affected_files": [
+        "trading/exit_handler.py",
+        "trading/strategies/sma_crossover_trader.py"
+      ],
+      "root_cause": "When an exit order is in-flight (taking 1-3s in limit_escalation), secondary calls from concurrent ticks or the bar safety net invoke execute_exit. UnifiedExitHandler returned the initial in-progress ExitAttempt placeholder which had success=False. Calling strategies interpreted success=False as an execution failure, logging false error lines, discarding the bucket from _exit_claimed, and scheduling redundant retries.",
+      "resolution": "1) Add in_progress: bool = False to ExitResult. 2) In UnifiedExitHandler.execute_exit, mark active uncompleted exits as in_progress=True when returning cached results. 3) In SMACrossoverTrader, guard on_tick and process_bars against queuing or executing exits on buckets with exit_in_progress or active in exit_handler. 4) Handle in_progress=True in execute_exit_via_handler by returning True with an informational status instead of an error.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_exit_handler_coverage.py tradingbot-bots/tests/test_sma_coverage.py -k in_progress"
+    },
+    {
+      "id": "ERR_WATCHDOG_STALE_OPERATIONAL_BACKUP_DUMP",
+      "patterns": [
+        "Stale operational backup dumps found",
+        "Operational dumps in /home/i030983/backups exceed retention",
+        "trading_profile_backup_",
+        "hygiene-backups-dumps"
+      ],
+      "symptom": "Operator receives medium-severity notification from ops-watchdog: 'Stale operational backup dumps found (> 30 days)' for ad-hoc profile switch backups (trading_profile_backup_*.txt) or reset files (trader_state_*_backup_*.json).",
+      "affected_files": [
+        "tradingbot-bots/trading/bot_control_api.py",
+        "tradingbot-services/scripts/backup-trading-data.sh",
+        "tradingbot-services/scripts/ops-watchdog.sh"
+      ],
+      "root_cause": "1) bot_control_api.py used shutil.copy2(profile_file, backup_file) which preserved the source profile file's historical mtime (e.g. from months earlier), causing newly created backups to immediately appear >30 days old to find -mtime +30. 2) cleanup_old_backups was only invoked inside switch_profile() and only matched trading_profile_backup_*.txt, omitting trader_state_*_backup_*.json. 3) Daily/weekly maintenance scripts lacked automated pruning of ad-hoc operational dumps.",
+      "resolution": "1) Call os.utime(backup_file, None) after copying profile and state backup files so mtime reflects creation time. 2) Expand cleanup_old_backups in bot_control_api.py to prune both profile dumps and trader_state dumps and call it on reset as well. 3) Add automated pruning of stale operational dumps (>30 days) to backup-trading-data.sh. 4) Remove stale dump files from ~/backups on the VM to clear the active watchdog marker.",
+      "verification_cmd": "pytest tradingbot-bots/tests/test_bot_control_api_coverage.py -k TestCleanupBackups && pytest tradingbot-services/tests/test_gateway_configuration.py -k test_backup_trading_data_script_verification_and_gated_pruning"
     }
   ]
 }
