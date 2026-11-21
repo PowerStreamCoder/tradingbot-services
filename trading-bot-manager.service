@@ -18,6 +18,9 @@ Environment="PYTHONUNBUFFERED=1"
 Environment="PYTHONUSERBASE=/home/i030983/.local"
 Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
 Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
+# Learned adaptive overrides are VM-local state, not part of the Git-tracked
+# config tree that deploys overwrite (tradingbot-config phase 2).
+Environment="TRADINGBOT_RUNTIME_DIR=/home/i030983/.bot_runtime"
 EnvironmentFile=/home/i030983/.trading_profile
 
 # Start bot manager
