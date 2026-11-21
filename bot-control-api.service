@@ -16,6 +16,9 @@ WorkingDirectory=/home/i030983/tradingbots
 Environment="PYTHONPATH=/home/i030983/tradingbots"
 Environment="GOOGLE_CLOUD_PROJECT=project-dfe26779-9849-4c97-9b6"
 Environment="GCP_PROJECT=project-dfe26779-9849-4c97-9b6"
+# Same runtime-state location as the manager, so CLI/API adaptive resets see
+# the same learned overrides the running fleet uses.
+Environment="TRADINGBOT_RUNTIME_DIR=/home/i030983/.bot_runtime"
 
 # Allow systemctl commands without password
 Environment="SUDO_ASKPASS=/bin/false"
