@@ -177,6 +177,38 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
 
+      # Option 3A (Audit F / Issue #497): Acquire atomic lock on the target VM to prevent cross-repo deploy concurrency interleaving
+      - name: Acquire VM deploy lock
+        run: |
+          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            set -e
+            LOCKDIR="$HOME/.deploy.lock"
+            OWNER="${{ github.repository }}/${{ github.run_id }}"
+            echo "Attempting to acquire VM deploy lock for $OWNER..."
+            for i in $(seq 1 60); do
+              if mkdir "$LOCKDIR" 2>/dev/null; then
+                echo "$OWNER" > "$LOCKDIR/owner"
+                echo "✅ Acquired VM deploy lock for $OWNER"
+                exit 0
+              fi
+              # Check for stale lock (> 30 minutes = 1800s)
+              if [ -f "$LOCKDIR/owner" ]; then
+                LOCK_MTIME=$(stat -c %Y "$LOCKDIR" 2>/dev/null || stat -f %m "$LOCKDIR" 2>/dev/null || date +%s)
+                NOW=$(date +%s)
+                AGE=$((NOW - LOCK_MTIME))
+                if [ "$AGE" -gt 1800 ]; then
+                  echo "⚠️ Stale deploy lock detected (${AGE}s old, held by $(cat "$LOCKDIR/owner" 2>/dev/null || echo 'unknown')). Breaking lock..."
+                  rm -rf "$LOCKDIR"
+                  continue
+                fi
+              fi
+              echo "⏳ Waiting for VM deploy lock held by $(cat "$LOCKDIR/owner" 2>/dev/null || echo 'unknown') (attempt $i/60)..."
+              sleep 5
+            done
+            echo "❌ Timeout waiting to acquire VM deploy lock ($LOCKDIR)"
+            exit 1
+          EOF
+
       - name: Validate service files exist
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -452,4 +484,22 @@ jobs:
             RECORD_FILE="\$HOME/logs/systemd-deployments.log"
             echo "\$(date -u +%Y-%m-%dT%H:%M:%SZ) commit=${{ github.sha }} — deployed via ${{ github.event_name }}" >> "\$RECORD_FILE"
             echo "✅ Deployment recorded (commit: ${{ github.sha }})"
+          EOF
+
+      # Option 3A (Audit F / Issue #497): Release VM deploy lock regardless of success or failure
+      - name: Release VM deploy lock
+        if: always()
+        run: |
+          ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            LOCKDIR="$HOME/.deploy.lock"
+            OWNER="${{ github.repository }}/${{ github.run_id }}"
+            if [ -d "$LOCKDIR" ]; then
+              HELD_BY=$(cat "$LOCKDIR/owner" 2>/dev/null || echo "")
+              if [ "$HELD_BY" = "$OWNER" ]; then
+                rm -rf "$LOCKDIR"
+                echo "✅ Released VM deploy lock for $OWNER"
+              else
+                echo "ℹ️  Deploy lock held by '$HELD_BY', not releasing for '$OWNER'"
+              fi
+            fi
           EOF
