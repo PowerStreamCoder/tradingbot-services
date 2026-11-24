@@ -15,6 +15,7 @@ Type=oneshot
 User=i030983
 Group=i030983
 WorkingDirectory=/home/i030983/tradingbots
+Environment="SWAP_WARN_MB=1000"
 
 # Reads /tmp lock files, systemd timer state, free/df, and the data/config trees,
 # then publishes a Firestore snapshot for the daily digest. Read-only against all
