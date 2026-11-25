@@ -211,16 +211,18 @@ jobs:
       # Option 3A (Audit F / Issue #497): Acquire atomic lock on the target VM to prevent cross-repo deploy concurrency interleaving
       - name: Acquire VM deploy lock
         run: |
-          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             set -e
             LOCKDIR="$HOME/.deploy.lock"
             OWNER="${{ github.repository }}/${{ github.run_id }}"
             echo "Attempting to acquire VM deploy lock for $OWNER..."
+            ACQUIRED=false
             for i in $(seq 1 60); do
               if mkdir "$LOCKDIR" 2>/dev/null; then
                 echo "$OWNER" > "$LOCKDIR/owner"
                 echo "✅ Acquired VM deploy lock for $OWNER"
-                exit 0
+                ACQUIRED=true
+                break
               fi
               # Check for stale lock (> 30 minutes = 1800s)
               if [ -f "$LOCKDIR/owner" ]; then
@@ -236,8 +238,10 @@ jobs:
               echo "⏳ Waiting for VM deploy lock held by $(cat "$LOCKDIR/owner" 2>/dev/null || echo 'unknown') (attempt $i/60)..."
               sleep 5
             done
-            echo "❌ Timeout waiting to acquire VM deploy lock ($LOCKDIR)"
-            exit 1
+            if [ "$ACQUIRED" != "true" ]; then
+              echo "❌ Timeout waiting to acquire VM deploy lock ($LOCKDIR)"
+              exit 1
+            fi
           EOF
 
       - name: Validate service files exist
