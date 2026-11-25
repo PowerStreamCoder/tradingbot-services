@@ -72,9 +72,11 @@ Environment=CHECK_LIVE_GATEWAY=auto
 # descriptor, so every run aborts with "Another auditor instance is already
 # running" (issue #98).
 #
-# `--date latest` resolves to the most recent session before today (Monday audits
-# Friday; weekends and US market holidays are skipped), so this Mon-Fri timer targets
-# valid trading sessions (#132 F9/12).
+# `--date catchup` resolves to the newest trading session not already present in
+# the audit history, so a Persistent=true boot catch-up fills the missed session
+# instead of re-auditing `latest` and leaving a gap (#155 AUD-023). Weekends and US
+# market holidays are skipped (#132 F9/12). If every recent session is already
+# audited, the run is explicitly marked `duplicate` with status `partial`.
 # The resolved ISO date - not the keyword - keys the auditor's memory lifecycle,
 # alerts and report filenames (tradingbot-tools#102).
 #
@@ -97,7 +99,7 @@ ExecStart=/bin/bash -c '\
   for sf in /home/i030983/tradingbots/data/*/trader_state_*.json /home/i030983/tradingbots/data/trader_state_*.json; do \
     [ -f "$sf" ] && args="$args --state-file $sf"; \
   done; \
-  exec /usr/bin/python3 -m auditor --date latest --publish-proposals --send-alerts --broker-reconcile $args'
+  exec /usr/bin/python3 -m auditor --date catchup --publish-proposals --send-alerts --broker-reconcile $args'
 
 StandardOutput=journal
 StandardError=journal
