@@ -1,5 +1,5 @@
 [Unit]
-Description=Spool Replay Worker (re-submit failed Firestore trade writes)
+Description=Spool Replay Plan (read-only; writes require explicit human approval)
 Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
 After=network-online.target
 Wants=network-online.target
@@ -23,11 +23,11 @@ WorkingDirectory=/home/i030983/tradingbot-tools
 Environment=BOTS_DIR=/home/i030983/tradingbots
 Environment=PYTHONPATH=/home/i030983/tradingbot-tools
 
-# Replay failed spool entries. Exit 1 means one or more records failed this run
-# and have been appended to replay_failures.jsonl; the worker already paged the
-# operator once MAX_RETRIES is reached, so the systemd failure is informational.
-# Exit 0 means all spools were empty or fully replayed.
-ExecStart=/usr/bin/python3 -m spool_replay
+# Refresh the exact, read-only replay plan for operator review. This unit MUST NOT
+# write trades: approved replays are a separate, human-initiated VM command
+# (`python -m spool_replay --approve <PLAN_ID> --actor NAME --reason TEXT`).
+# Exit 1 means the planner itself crashed; pending records are informational.
+ExecStart=/usr/bin/python3 -m spool_replay --dry-run --json
 
 StandardOutput=journal
 StandardError=journal
@@ -38,8 +38,8 @@ TimeoutStartSec=120s
 MemoryMax=256M
 CPUQuota=25%
 
-# One-shot driven by the timer. A failure is already surfaced via OnFailure; no
-# automatic retry here so we don't hammer Firestore during an outage.
+# One-shot driven by the timer. The job is read-only; a failure is surfaced via
+# OnFailure. No automatic retry and no implicit approval path.
 Restart=no
 
 [Install]

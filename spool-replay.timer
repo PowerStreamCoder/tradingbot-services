@@ -1,9 +1,11 @@
 [Unit]
-Description=Schedule Spool Replay Worker (every 15 min, market hours + immediate pre-open)
+Description=Refresh read-only Spool Replay Plan (every 15 min, market hours)
 Documentation=https://github.com/PowerStreamCoder/tradingbot-documentation
 
 [Timer]
 # Run every 15 minutes during and around market hours (08:00–17:00 ET Mon-Fri).
+# This schedules planning only. Writes require explicit human approval via
+# `python -m spool_replay --approve <PLAN_ID> --actor NAME --reason TEXT`.
 # The early 08:00 slots catch any overnight Firestore failures before the first
 # trade of the day; the 17:00 slot catches failures from the close-out window.
 # NOTE: systemd cannot range both the hour and the minute in one spec, so the
