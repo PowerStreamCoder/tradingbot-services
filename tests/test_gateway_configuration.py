@@ -122,6 +122,16 @@ class TestGatewayConfiguration(unittest.TestCase):
             self.assertNotIn("AUDITOR_CLIENT_ID_PAPER=" + bid, content)
             self.assertNotIn("AUDITOR_CLIENT_ID_LIVE=" + bid, content)
 
+    def test_trade_log_auditor_exit_semantics(self):
+        """#155 AUD-005: high findings fail; inconclusive and busy do not."""
+        service_file = os.path.join(self.repo_root, "trade-log-auditor.service")
+        with open(service_file, "r") as f:
+            content = f.read()
+
+        self.assertIn("SuccessExitStatus=0 3 4", content)
+        self.assertIn("critical/high findings", content)
+        self.assertIn("LOCK_BUSY", content)
+
     def test_live_gateway_market_hours_gating_in_watchdog_and_health_scripts(self):
         """Verify ops-watchdog.sh and health-check.sh gate live gateway checks to market hours."""
         import tempfile

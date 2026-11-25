@@ -14,9 +14,9 @@ Wants=trading-bot-manager-stop.timer
 # Page the operator if this unit fails (issue #25). Findings themselves are
 # already emailed by the auditor's own notify stage (--send-alerts), so the alert
 # here is about the job breaking, not about what it found. SuccessExitStatus in
-# [Service] keeps exit 3 (INCONCLUSIVE, e.g. a session with no trades) from
-# marking the unit failed; exit 1 (critical findings OR an unhandled crash) and
-# exit 2 (usage/config error) still fire the alert.
+# [Service] keeps exit 3 (INCONCLUSIVE) and exit 4 (LOCK_BUSY, benign overlap)
+# from marking the unit failed; exit 1 (critical/high findings OR an unhandled
+# crash) and exit 2 (usage/config error) still fire the alert.
 OnFailure=service-failure-notifier@%n.service
 
 [Service]
@@ -24,10 +24,10 @@ Type=oneshot
 User=i030983
 Group=i030983
 
-# Exit 3 is INCONCLUSIVE: a legitimate verdict, not a failure. Declared here --
-# SuccessExitStatus is a [Service] directive, and systemd silently ignores it in
-# [Unit] (caught by `systemd-analyze verify`).
-SuccessExitStatus=0 3
+# Exit 3 is INCONCLUSIVE and exit 4 is LOCK_BUSY: both are legitimate outcomes,
+# not failures. Declared here -- SuccessExitStatus is a [Service] directive, and
+# systemd silently ignores it in [Unit] (caught by `systemd-analyze verify`).
+SuccessExitStatus=0 3 4
 
 # The auditor code lives in the tradingbot-tools repository and is deployed to this
 # path by that repo's own deploy-tools.yml (23:45 ET nightly, plus manual dispatch).
@@ -63,8 +63,9 @@ Environment=CHECK_LIVE_GATEWAY=auto
 #
 # Mutual exclusion: the auditor enforces single-instance itself, taking an
 # exclusive, non-blocking flock on /tmp/trade_log_auditor.lock
-# (auditor/cli.py::_acquire_lock) and failing fast when another run -- e.g. a
-# documented manual `python3 -m auditor` -- is already reconciling memory.
+# (auditor/cli.py::_acquire_lock) and exiting 4 (LOCK_BUSY) with structured
+# stderr when another run -- e.g. a documented manual `python3 -m auditor` -- is
+# already reconciling memory.
 #
 # Do NOT also wrap ExecStart in `flock`: the outer flock holds the lock for the
 # whole run while the auditor asks for that same lock through its own file
