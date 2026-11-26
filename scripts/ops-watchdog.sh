@@ -12,6 +12,8 @@
 #      trade auditor with no notice (issue #98).
 #   2. Missed scheduled runs (dead-man's snitch) — a timer that silently stops
 #      firing (auditor, nightly backup, learning analysis).
+#   2b. Audit verdict quality — two inconclusive audits in a row, or an alert
+#      dispatch failure, neither of which fails the systemd unit (#155 AUD-014).
 #   3. Swap saturation — health-check.sh watches available RAM %; sustained swap
 #      is a distinct early-OOM signal (350 MB seen in the audit).
 #   4. Ownership drift — data/config dirs becoming root-owned, which breaks the
@@ -288,6 +290,83 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 SNAP_MISSED_RUNS=$missed_count
 
+# 2b. Trade Log Auditor verdict quality (#155 AUD-014) ------------------------
+# A timer that fires perfectly can still produce useless audits: exit 3
+# (INCONCLUSIVE) is declared a SuccessExitStatus, and a failed notification
+# dispatch is swallowed by the auditor so the unit exits 0. Both were silent.
+# Inspect the auditor's own run JSON (which records `status` and
+# `dispatch.errors`) and page if the last two runs were inconclusive or the
+# latest run failed to deliver its alerts. Missing directory / Python degrades
+# to no alert, like the Linux-only checks above.
+AUDITOR_REPORTS_DIR="${AUDITOR_REPORTS_DIR:-/home/i030983/tradingbot-tools/auditor/analysis/reports}"
+audit_verdict_ok=1
+if [ -d "$AUDITOR_REPORTS_DIR" ]; then
+    audit_python="$PYTHON_BIN"
+    command -v "$audit_python" >/dev/null 2>&1 || audit_python="$(command -v python3 || true)"
+    if [ -n "$audit_python" ]; then
+        verdict_lines=$("$audit_python" - "$AUDITOR_REPORTS_DIR" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path(sys.argv[1])
+runs = []
+for path in root.glob("*.json"):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if not isinstance(data, dict) or "run_id" not in data:
+        continue
+    created = str(data.get("created_at") or "")
+    if not created:
+        created = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    runs.append((created, path.name, data))
+runs.sort(key=lambda r: (r[0], r[1]))
+last = runs[-1][2] if runs else None
+prev = runs[-2][2] if len(runs) > 1 else None
+if last is not None:
+    dispatch = last.get("dispatch") or {}
+    errors = [str(e) for e in (dispatch.get("errors") or []) if str(e).strip()]
+    errors += [
+        str(e) for e in (last.get("errors") or [])
+        if "notification not delivered" in str(e).lower()
+        or "failed to send" in str(e).lower()
+    ]
+    if errors:
+        print("DISPATCH\t" + "; ".join(errors[:3])[:400])
+    if (prev is not None
+            and last.get("status") == "inconclusive"
+            and prev.get("status") == "inconclusive"):
+        reasons = "; ".join(str(r) for r in (last.get("inconclusive_reasons") or []))
+        print("INCONCLUSIVE\t" + (reasons[:400] or "no reason recorded"))
+PY
+        )
+        while IFS=$'\t' read -r kind detail; do
+            [ -z "$kind" ] && continue
+            case "$kind" in
+                INCONCLUSIVE)
+                    audit_verdict_ok=0
+                    report 1 audit-inconclusive high \
+                        "Two consecutive inconclusive audit runs" \
+                        "The two most recent Trade Log Auditor runs were inconclusive ($detail). Exit 3 is a declared SuccessExitStatus, so systemd will not page. The audit has no verdict: inspect the missing sources and re-run the affected session manually."
+                    ;;
+                DISPATCH)
+                    audit_verdict_ok=0
+                    report 1 audit-dispatch-error high \
+                        "Audit alert dispatch failed" \
+                        "The most recent audit run recorded notification delivery errors: $detail. Alert dispatch failures are swallowed by the auditor, so no operator was paged. Check ~/logs/health-alerts.log and re-run the audit with --send-alerts after fixing notification credentials."
+                    ;;
+            esac
+        done <<< "$verdict_lines"
+        if [ "$audit_verdict_ok" -eq 1 ]; then
+            report 0 audit-inconclusive high "Two consecutive inconclusive audit runs" ""
+            report 0 audit-dispatch-error high "Audit alert dispatch failed" ""
+        fi
+    fi
+fi
+
 # 3. Swap saturation ----------------------------------------------------------
 if command -v free >/dev/null 2>&1; then
     swap_used_mb=$(free -m 2>/dev/null | awk '/^Swap:/ {print $3}')
@@ -553,5 +632,5 @@ else
     log "dry-run: would publish snapshot ${snap_args[*]}"
 fi
 
-log "ops watchdog done: stale_locks=$SNAP_STALE_LOCKS missed_runs=$SNAP_MISSED_RUNS swap=${SNAP_SWAP:-n/a}MB disk=${SNAP_DISK:-n/a}% ownership_ok=$SNAP_OWNERSHIP_OK backups_ok=$SNAP_BACKUPS_OK"
+log "ops watchdog done: stale_locks=$SNAP_STALE_LOCKS missed_runs=$SNAP_MISSED_RUNS audit_verdict_ok=$audit_verdict_ok swap=${SNAP_SWAP:-n/a}MB disk=${SNAP_DISK:-n/a}% ownership_ok=$SNAP_OWNERSHIP_OK backups_ok=$SNAP_BACKUPS_OK"
 exit 0

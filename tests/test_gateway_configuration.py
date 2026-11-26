@@ -122,6 +122,16 @@ class TestGatewayConfiguration(unittest.TestCase):
             self.assertNotIn("AUDITOR_CLIENT_ID_PAPER=" + bid, content)
             self.assertNotIn("AUDITOR_CLIENT_ID_LIVE=" + bid, content)
 
+    def test_trade_log_auditor_exit_semantics(self):
+        """#155 AUD-005: high findings fail; inconclusive and busy do not."""
+        service_file = os.path.join(self.repo_root, "trade-log-auditor.service")
+        with open(service_file, "r") as f:
+            content = f.read()
+
+        self.assertIn("SuccessExitStatus=0 3 4", content)
+        self.assertIn("critical/high findings", content)
+        self.assertIn("LOCK_BUSY", content)
+
     def test_live_gateway_market_hours_gating_in_watchdog_and_health_scripts(self):
         """Verify ops-watchdog.sh and health-check.sh gate live gateway checks to market hours."""
         import tempfile
@@ -436,6 +446,106 @@ fi
         # The global dow calculation for weekend tolerance must evaluate in America/New_York
         self.assertIn('dow=$(TZ="America/New_York" date +%u 2>/dev/null || date +%u)', content,
                       "Weekend tolerance DOW calculation must use America/New_York timezone to prevent false alerts on Monday evening (Tuesday UTC)")
+
+
+class TestWatchdogAuditVerdict(unittest.TestCase):
+    """#155 AUD-014: silent audit verdicts must page within one watchdog cycle."""
+
+    def setUp(self):
+        self.repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        self.watchdog_script = os.path.join(self.repo_root, "scripts", "ops-watchdog.sh")
+
+    @staticmethod
+    def _write_run(reports_dir, name, created_at, status="success",
+                   dispatch=None, errors=None, reasons=None):
+        import json
+        payload = {
+            "run_id": name,
+            "created_at": created_at,
+            "status": status,
+            "dispatch": dispatch if dispatch is not None else {"errors": []},
+            "errors": errors or [],
+            "inconclusive_reasons": reasons or [],
+        }
+        with open(os.path.join(reports_dir, f"2026-11-18_ALL_{name}.json"), "w") as f:
+            json.dump(payload, f)
+
+    def _run_watchdog(self, tmp, reports_dir):
+        import shutil
+        logs_dir = os.path.join(tmp, "logs")
+        state_dir = os.path.join(logs_dir, "health-state")
+        os.makedirs(state_dir, exist_ok=True)
+        env = os.environ.copy()
+        env.update({
+            "OPS_WATCHDOG_LOG_DIR": logs_dir,
+            "AUDITOR_REPORTS_DIR": reports_dir,
+            "OPS_WATCHDOG_DRY_RUN": "1",
+            "PYTHON_BIN": "python3",
+        })
+        res = subprocess.run(["bash", self.watchdog_script], env=env,
+                             capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return state_dir, os.path.join(logs_dir, "health-alerts.log"), shutil
+
+    def test_two_inconclusive_runs_page(self):
+        import tempfile
+        import shutil
+
+        td = tempfile.mkdtemp(prefix="watchdog_audit_inc_")
+        try:
+            reports = os.path.join(td, "reports")
+            os.makedirs(reports, exist_ok=True)
+            reasons = ["Firestore init failed", "required source empty"]
+            self._write_run(reports, "r1", "2026-11-17T00:00:00", status="inconclusive",
+                            reasons=reasons)
+            self._write_run(reports, "r2", "2026-11-18T00:00:00", status="inconclusive",
+                            reasons=reasons)
+            state_dir, alert_log, _ = self._run_watchdog(td, reports)
+
+            self.assertTrue(os.path.exists(os.path.join(state_dir, "audit-inconclusive")))
+            with open(alert_log) as f:
+                content = f.read()
+            self.assertIn("Two consecutive inconclusive audit runs", content)
+            self.assertIn("Firestore init failed", content)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+    def test_single_inconclusive_run_does_not_page(self):
+        import tempfile
+        import shutil
+
+        td = tempfile.mkdtemp(prefix="watchdog_audit_single_")
+        try:
+            reports = os.path.join(td, "reports")
+            os.makedirs(reports, exist_ok=True)
+            self._write_run(reports, "r1", "2026-11-17T00:00:00", status="inconclusive",
+                            reasons=["one-off source blip"])
+            self._write_run(reports, "r2", "2026-11-18T00:00:00")
+            state_dir, _, _ = self._run_watchdog(td, reports)
+            self.assertFalse(os.path.exists(os.path.join(state_dir, "audit-inconclusive")))
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+    def test_dispatch_error_pages(self):
+        import tempfile
+        import shutil
+
+        td = tempfile.mkdtemp(prefix="watchdog_audit_dispatch_")
+        try:
+            reports = os.path.join(td, "reports")
+            os.makedirs(reports, exist_ok=True)
+            self._write_run(reports, "r1", "2026-11-17T00:00:00")
+            self._write_run(reports, "r2", "2026-11-18T00:00:00",
+                            dispatch={"errors": ["critical_alert: SMTP 535 auth failure"]})
+            state_dir, alert_log, _ = self._run_watchdog(td, reports)
+
+            self.assertTrue(os.path.exists(os.path.join(state_dir, "audit-dispatch-error")))
+            with open(alert_log) as f:
+                content = f.read()
+            self.assertIn("Audit alert dispatch failed", content)
+            self.assertIn("SMTP 535 auth failure", content)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
 
 
 if __name__ == "__main__":

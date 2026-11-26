@@ -1,11 +1,16 @@
 name: Deploy Services to VM (Daily Sync & Manual)
 
+# GitHub Actions cron is always UTC; it does not follow DST. The fixed 03:55 UTC
+# slot is 23:55 America/New_York during EDT (UTC-4) and 22:55 during EST (UTC-5,
+# on the preceding ET day) — the local wall time drifts one hour at each transition.
 # Runs 10 min AFTER the tradingbot-tools deploy (03:45 UTC) so the auditor
 # package is already on the VM and the timer can be enabled the same night.
 # It still runs after tradingbot-bots (03:00 UTC), which the auditor imports from.
 on:
   schedule:
-    # Mon-Fri at 03:55 UTC (10 min after the tools deploy at 03:45 UTC)
+    # Tue-Sat 03:55 UTC = Mon-Fri 23:55 EDT (UTC-4) in summer, or Mon-Fri 22:55 EST
+    # (UTC-5) in winter. The UTC weekday is one day ahead; the ET wall time drifts
+    # by one hour at DST changes.
     - cron: '55 3 * * 2-6'
   repository_dispatch:
     types: [services-paths-changed]  # triggered by bots deploy when ExecStart paths change
@@ -45,6 +50,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Assert deploy schedule (UTC ↔ America/New_York)
+        run: |
+          python3 - <<'PY'
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          workflow = Path('.github/workflows/deploy-services.yml').read_text(encoding='utf-8')
+          cron = re.search(r"^\s*-\s*cron:\s*'([^']+)'", workflow, re.MULTILINE)
+          assert cron and cron.group(1) == '55 3 * * 2-6', 'unexpected services deploy cron'
+          for expected in ('03:55 UTC', '23:55 EDT', '22:55 EST', 'DST'):
+              assert expected in workflow, f'missing schedule annotation: {expected}'
+
+          now_utc = datetime.now(timezone.utc)
+          now_et = now_utc.astimezone(ZoneInfo('America/New_York'))
+          print(f'🕒 Trigger now: {now_utc:%Y-%m-%d %H:%M:%S} UTC / '
+                f'{now_et:%Y-%m-%d %H:%M:%S %Z} (America/New_York)')
+          for month, label in ((7, 'EDT'), (1, 'EST')):
+              instant = datetime(2026, month, 7, 3, 55, tzinfo=timezone.utc)
+              local = instant.astimezone(ZoneInfo('America/New_York'))
+              print(f'🕒 Scheduled 03:55 UTC ({label} sample): {local:%Y-%m-%d %H:%M %Z} '
+                    f'(UTC{local:%z})')
+          print('✅ Schedule assertion: cron 55 3 * * 2-6 = 23:55 EDT / 22:55 EST ET')
+          PY
 
       - name: Verify required secrets
         run: |
@@ -180,16 +211,18 @@ jobs:
       # Option 3A (Audit F / Issue #497): Acquire atomic lock on the target VM to prevent cross-repo deploy concurrency interleaving
       - name: Acquire VM deploy lock
         run: |
-          ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+          ssh -o ConnectTimeout=10 ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             set -e
             LOCKDIR="$HOME/.deploy.lock"
             OWNER="${{ github.repository }}/${{ github.run_id }}"
             echo "Attempting to acquire VM deploy lock for $OWNER..."
+            ACQUIRED=false
             for i in $(seq 1 60); do
               if mkdir "$LOCKDIR" 2>/dev/null; then
                 echo "$OWNER" > "$LOCKDIR/owner"
                 echo "✅ Acquired VM deploy lock for $OWNER"
-                exit 0
+                ACQUIRED=true
+                break
               fi
               # Check for stale lock (> 30 minutes = 1800s)
               if [ -f "$LOCKDIR/owner" ]; then
@@ -205,8 +238,10 @@ jobs:
               echo "⏳ Waiting for VM deploy lock held by $(cat "$LOCKDIR/owner" 2>/dev/null || echo 'unknown') (attempt $i/60)..."
               sleep 5
             done
-            echo "❌ Timeout waiting to acquire VM deploy lock ($LOCKDIR)"
-            exit 1
+            if [ "$ACQUIRED" != "true" ]; then
+              echo "❌ Timeout waiting to acquire VM deploy lock ($LOCKDIR)"
+              exit 1
+            fi
           EOF
 
       - name: Validate service files exist
@@ -388,17 +423,21 @@ jobs:
         run: |
           ssh ${{ env.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
             echo "Enabling and restarting timers..."
+            echo "Deploy cron: 03:55 UTC = 23:55 America/New_York (EDT, UTC-4) / 22:55 (EST, UTC-5, preceding ET day)"
+            date -u '+Now on VM: %Y-%m-%d %H:%M:%S UTC'
+            TZ=America/New_York date '+Now on VM: %Y-%m-%d %H:%M:%S %Z (America/New_York)'
             sudo systemctl enable --now trading-bot-manager-start.timer
             sudo systemctl enable --now trading-bot-manager-stop.timer
             sudo systemctl enable --now ops-watchdog.timer
             sudo systemctl enable --now learning-analysis.timer
             # Only enable the auditor timer once its code is actually on the VM.
             # This workflow ships only units; the auditor code arrives via
-            # tradingbot-tools' own deploy-tools.yml (23:45 ET nightly). Enabling
+            # tradingbot-tools' own deploy-tools.yml (03:45 UTC = 23:45 America/New_York
+            # during EDT / 22:45 during EST on the preceding ET day). Enabling
             # unconditionally would queue a unit whose ExecStartPre fails every
-            # afternoon. This workflow is scheduled at 23:55 ET, 10 min AFTER the
-            # tools deploy, so the package is normally already present and the timer
-            # comes up the same night. The check stays as a guard: if a tools deploy
+            # afternoon. This workflow runs at 03:55 UTC (= 23:55 EDT / 22:55 EST),
+            # 10 min AFTER the tools deploy, so the package is normally already
+            # present and the timer comes up the same night. The check stays as a guard: if a tools deploy
             # was skipped or failed, skip the timer and say so rather than arming a
             # unit that would fail all afternoon.
             if [ -d /home/i030983/tradingbot-tools/auditor ]; then
