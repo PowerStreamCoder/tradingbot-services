@@ -54,6 +54,9 @@ HYGIENE_DIRS="${HYGIENE_DIRS:-$HOME/tradingbots $HOME/tradingbot-config}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 
 LOCK_MAX_AGE_MIN="${LOCK_MAX_AGE_MIN:-60}"
+# Persistent multi-process flock IPC locks (empty, unheld between brief critical
+# sections) must never be unlinked or flagged as stale (#562).
+PERSISTENT_IPC_LOCKS="${PERSISTENT_IPC_LOCKS:-tradingbot_portfolio_state.json.lock}"
 SWAP_WARN_MB="${SWAP_WARN_MB:-1000}"
 BACKUP_MAX_GB="${BACKUP_MAX_GB:-5}"
 BACKUP_MAX_AGE_DAYS="${BACKUP_MAX_AGE_DAYS:-30}"
@@ -193,10 +196,22 @@ if [ -d "$LOCK_SCAN_DIR" ]; then
     done
     for lock in "$LOCK_SCAN_DIR"/*.lock; do
         [ -e "$lock" ] || continue
+        base_lock=$(basename "$lock")
+        key="stale-lock:$base_lock"
+        is_persistent_ipc=0
+        for ipc_lock in $PERSISTENT_IPC_LOCKS; do
+            if [ "$base_lock" = "$ipc_lock" ]; then
+                is_persistent_ipc=1
+                break
+            fi
+        done
+        if [ "$is_persistent_ipc" -eq 1 ]; then
+            report 0 "$key" critical "Stale lock file: $lock" ""
+            continue
+        fi
         mtime=$(file_mtime "$lock")
         [ -n "$mtime" ] || continue
         age=$(( now_epoch - mtime ))
-        key="stale-lock:$(basename "$lock")"
         if [ "$age" -le "$lock_age_limit" ]; then
             report 0 "$key" critical "Stale lock file: $lock" ""
             continue

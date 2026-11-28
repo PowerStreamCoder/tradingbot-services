@@ -547,6 +547,52 @@ class TestWatchdogAuditVerdict(unittest.TestCase):
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_persistent_portfolio_ipc_lock_not_cleaned_or_paged(self):
+        """#562: empty flock IPC lock tradingbot_portfolio_state.json.lock must be ignored."""
+        import tempfile
+        import shutil
+        import time as time_mod
+
+        td = tempfile.mkdtemp(prefix="watchdog_ipc_lock_")
+        try:
+            logs_dir = os.path.join(td, "logs")
+            lock_dir = os.path.join(td, "locks")
+            reports_dir = os.path.join(td, "reports")
+            os.makedirs(os.path.join(logs_dir, "health-state"), exist_ok=True)
+            os.makedirs(lock_dir, exist_ok=True)
+            os.makedirs(reports_dir, exist_ok=True)
+
+            ipc_lock = os.path.join(lock_dir, "tradingbot_portfolio_state.json.lock")
+            job_lock = os.path.join(lock_dir, "trade_log_auditor.lock")
+            open(ipc_lock, "w").close()
+            open(job_lock, "w").close()
+            old_ts = time_mod.time() - 7200  # 2h old
+            os.utime(ipc_lock, (old_ts, old_ts))
+            os.utime(job_lock, (old_ts, old_ts))
+
+            env = os.environ.copy()
+            env.update({
+                "OPS_WATCHDOG_LOG_DIR": logs_dir,
+                "LOCK_SCAN_DIR": lock_dir,
+                "AUDITOR_REPORTS_DIR": reports_dir,
+                "OPS_WATCHDOG_DRY_RUN": "1",
+                "PYTHON_BIN": "python3",
+            })
+            res = subprocess.run(["bash", self.watchdog_script], env=env,
+                                 capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            # Persistent IPC lock is preserved and unflagged
+            self.assertTrue(os.path.exists(ipc_lock))
+            self.assertFalse(os.path.exists(os.path.join(
+                logs_dir, "health-state", "stale-lock:tradingbot_portfolio_state.json.lock"
+            )))
+            # One-shot job lock without PID is still flagged/handled
+            self.assertTrue(os.path.exists(os.path.join(
+                logs_dir, "health-state", "stale-lock:trade_log_auditor.lock"
+            )))
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

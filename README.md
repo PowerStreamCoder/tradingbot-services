@@ -14,6 +14,7 @@ This repository manages the OS-level orchestration of trading bots running on th
 - **Bot Control API Unit (`bot-control-api.service`)**: Runs the authenticated REST command server (`:8080`) enabling remote actions from the Cloud Run Dashboard. Configured with dedicated `WorkingDirectory`, `PYTHONPATH`, and drop-in `override.conf` for `BOT_CONTROL_API_KEY`.
 - **Trade Log Auditor Unit (`trade-log-auditor.service` / `.timer`)**: Runs the offline post-close trade-log auditor at 4:45 PM ET Mon-Fri with `--date latest`, verifying trade integrity across state files, emergency spool (`/data/spool`), and broker snapshots before nightly learning runs.
 - **Nightly Learning Analysis Unit (`learning-analysis.service` / `.timer`)**: Runs post-market learning analysis at 11:00 PM ET.
+- **Sentinel Audit Unit (`sentinel-audit.service` / `.timer`)**: Triggers the dashboard's token-guarded In-Flight Thesis Sentinel audit at 08:30 AM ET Mon-Fri (bots#214). The token lives in a root-provisioned `/home/i030983/.sentinel_audit` file (`chmod 600`), never in Git.
 - **24/7 Notification Watchdog (`notification-service.service`)**: Standalone watchdog monitoring Firestore for hung bots, daily loss thresholds, and option assignment risks.
 - **Automated Failure Alerting (`service-failure-notifier@.service`)**: Systemd failure hook that alerts operators immediately via email whenever any monitored service, timer, or cron job fails (#25).
 - **Operational Watchdog (`ops-watchdog.service` / `.timer`)**: Runs `scripts/ops-watchdog.sh` every 15 minutes to catch the *silent* failure modes a VM audit surfaced (#310): stale lock files (#98), missed scheduled runs, swap saturation, gateway container crashes, data/config ownership drift (#297), and filesystem-hygiene drift. Alerts flow through the same `notify_alert.py` pipeline, and a compact health snapshot is published to Firestore (`system_health/current`) for the daily digest.
@@ -35,6 +36,8 @@ tradingbot-services/
 ├── trade-log-auditor.timer                # Schedules audit at 4:45 PM ET Mon-Fri
 ├── learning-analysis.service              # Nightly learning analysis unit
 ├── learning-analysis.timer                # Schedules learning analysis at 11:00 PM ET
+├── sentinel-audit.service                 # One-shot curl trigger for the dashboard sentinel audit
+├── sentinel-audit.timer                   # Schedules the sentinel audit at 08:30 AM ET Mon-Fri
 ├── notification-service.service           # 24/7 background Firestore notification watchdog
 ├── service-failure-notifier@.service      # Dynamic systemd OnFailure notification unit
 ├── ops-watchdog.service                   # Operational watchdog (oneshot): locks, missed runs, swap, ownership, hygiene
