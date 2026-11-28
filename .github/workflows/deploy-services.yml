@@ -438,7 +438,9 @@ jobs:
             # Only arm the sentinel audit once its token file is provisioned.
             # The dashboard endpoint returns 503 when no token is configured,
             # so an unprovisioned timer would fail every pre-market morning.
-            if [ -s /home/i030983/.sentinel_audit ]; then
+            # sudo is required: the file is root-owned 600, so the SSH user's
+            # plain `-s` test would always be false and the timer never armed.
+            if sudo test -s /home/i030983/.sentinel_audit; then
               sudo systemctl enable --now sentinel-audit.timer
               echo "✅ sentinel-audit.timer enabled (token file present)"
             else
