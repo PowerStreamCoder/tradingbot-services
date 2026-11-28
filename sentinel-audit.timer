@@ -1,0 +1,17 @@
+[Unit]
+Description=Schedule In-Flight Thesis Sentinel Audit (08:30 AM ET, Weekdays)
+Documentation=https://github.com/PowerStreamCoder/tradingbot-bots/issues/214
+Requires=sentinel-audit.service
+
+[Timer]
+# 08:30 America/New_York tracks 12:30 UTC (EDT) / 13:30 UTC (EST) automatically.
+OnCalendar=Mon..Fri 08:30:00 America/New_York
+
+# Catch up after a VM reboot, but never double-fire on a normal weekday.
+Persistent=true
+
+# No jitter: the audit must finish before the 08:51 ET bot start.
+Unit=sentinel-audit.service
+
+[Install]
+WantedBy=timers.target

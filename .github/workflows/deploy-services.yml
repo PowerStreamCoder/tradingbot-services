@@ -281,6 +281,8 @@ jobs:
             sudo cp /etc/systemd/system/trading-bot-*.service "$BACKUP_DIR/" 2>/dev/null || true
             sudo cp /etc/systemd/system/trading-bot-*.timer "$BACKUP_DIR/" 2>/dev/null || true
             sudo cp /etc/systemd/system/bot-control-api.service "$BACKUP_DIR/" 2>/dev/null || true
+            sudo cp /etc/systemd/system/sentinel-audit.service "$BACKUP_DIR/" 2>/dev/null || true
+            sudo cp /etc/systemd/system/sentinel-audit.timer "$BACKUP_DIR/" 2>/dev/null || true
 
             # Back up the operational scripts that this workflow now ships.
             if [ -d "$HOME/scripts" ]; then
@@ -356,7 +358,8 @@ jobs:
             for unit in notification-service.service trade-log-auditor.service \
                         trade-log-auditor.timer learning-analysis.service \
                         learning-analysis.timer ops-watchdog.service \
-                        ops-watchdog.timer "service-failure-notifier@.service"; do
+                        ops-watchdog.timer sentinel-audit.service \
+                        sentinel-audit.timer "service-failure-notifier@.service"; do
               sudo chown root:root "/etc/systemd/system/$unit" 2>/dev/null || true
               sudo chmod 644 "/etc/systemd/system/$unit" 2>/dev/null || true
             done
@@ -409,6 +412,8 @@ jobs:
               /etc/systemd/system/learning-analysis.service \
               /etc/systemd/system/ops-watchdog.service \
               /etc/systemd/system/ops-watchdog.timer \
+              /etc/systemd/system/sentinel-audit.service \
+              /etc/systemd/system/sentinel-audit.timer \
               "/etc/systemd/system/service-failure-notifier@.service" 2>&1 \
               | grep -v snapd || true)
             if [ -n "$PROBLEMS" ]; then
@@ -430,6 +435,16 @@ jobs:
             sudo systemctl enable --now trading-bot-manager-stop.timer
             sudo systemctl enable --now ops-watchdog.timer
             sudo systemctl enable --now learning-analysis.timer
+            # Only arm the sentinel audit once its token file is provisioned.
+            # The dashboard endpoint returns 503 when no token is configured,
+            # so an unprovisioned timer would fail every pre-market morning.
+            if [ -s /home/i030983/.sentinel_audit ]; then
+              sudo systemctl enable --now sentinel-audit.timer
+              echo "✅ sentinel-audit.timer enabled (token file present)"
+            else
+              echo "⚠️  /home/i030983/.sentinel_audit missing - skipping sentinel-audit.timer."
+              echo "    Provision the token from Secret Manager (chmod 600), then enable it."
+            fi
             # Only enable the auditor timer once its code is actually on the VM.
             # This workflow ships only units; the auditor code arrives via
             # tradingbot-tools' own deploy-tools.yml (03:45 UTC = 23:45 America/New_York
@@ -457,6 +472,8 @@ jobs:
             systemctl show ops-watchdog.timer --property=NextElapseUSecRealtime --value || true
             echo "⏰ Learning analysis timer next fire:"
             systemctl show learning-analysis.timer --property=NextElapseUSecRealtime --value || true
+            echo "⏰ Sentinel audit timer next fire:"
+            systemctl show sentinel-audit.timer --property=NextElapseUSecRealtime --value || true
             echo "⏰ Auditor timer next fire:"
             systemctl show trade-log-auditor.timer --property=NextElapseUSecRealtime --value || true
           EOF
@@ -490,6 +507,10 @@ jobs:
             sudo systemctl status ops-watchdog.timer --no-pager -l || true
 
             echo ""
+            echo "🧭 Sentinel Audit Timer:"
+            sudo systemctl status sentinel-audit.timer --no-pager -l || true
+
+            echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           EOF
 
@@ -509,9 +530,11 @@ jobs:
           echo "3. Enable timers if not already enabled:"
           echo "   sudo systemctl enable --now trading-bot-manager-start.timer"
           echo "   sudo systemctl enable --now trading-bot-manager-stop.timer"
+          echo "   sudo systemctl enable --now sentinel-audit.timer   # after /home/i030983/.sentinel_audit is provisioned"
           echo ""
           echo "4. View logs:"
           echo "   sudo journalctl -u trading-bot-manager -f"
+          echo "   sudo journalctl -u sentinel-audit -f"
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
