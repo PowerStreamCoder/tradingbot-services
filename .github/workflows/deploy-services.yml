@@ -440,12 +440,12 @@ jobs:
             # so an unprovisioned timer would fail every pre-market morning.
             # sudo is required: the file is root-owned 600, so the SSH user's
             # plain `-s` test would always be false and the timer never armed.
-            if sudo test -s /home/i030983/.sentinel_audit; then
+            if sudo grep -Eq '^SENTINEL_AUDIT_TOKEN=.+$' /home/i030983/.sentinel_audit 2>/dev/null; then
               sudo systemctl enable --now sentinel-audit.timer
-              echo "✅ sentinel-audit.timer enabled (token file present)"
+              echo "✅ sentinel-audit.timer enabled (token file present in EnvironmentFile format)"
             else
-              echo "⚠️  /home/i030983/.sentinel_audit missing - skipping sentinel-audit.timer."
-              echo "    Provision the token from Secret Manager (chmod 600), then enable it."
+              echo "⚠️  /home/i030983/.sentinel_audit missing or not in EnvironmentFile format - skipping sentinel-audit.timer."
+              echo "    Provision as 'SENTINEL_AUDIT_TOKEN=<token>' with root:root 600, then enable it."
             fi
             # Only enable the auditor timer once its code is actually on the VM.
             # This workflow ships only units; the auditor code arrives via

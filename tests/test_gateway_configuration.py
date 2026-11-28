@@ -593,6 +593,19 @@ class TestWatchdogAuditVerdict(unittest.TestCase):
         finally:
             shutil.rmtree(td, ignore_errors=True)
 
+    def test_sentinel_timer_deploy_check_requires_environment_file_format(self):
+        """A bare token silently 401s; gate timer enablement on KEY=VALUE."""
+        workflow = os.path.join(
+            self.repo_root, ".github", "workflows", "deploy-services.yml"
+        )
+        with open(workflow, "r") as f:
+            content = f.read()
+        self.assertIn(
+            "sudo grep -Eq '^SENTINEL_AUDIT_TOKEN=.+$' /home/i030983/.sentinel_audit",
+            content,
+        )
+        self.assertIn("sudo systemctl enable --now sentinel-audit.timer", content)
+
 
 if __name__ == "__main__":
     unittest.main()
